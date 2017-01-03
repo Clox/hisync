@@ -11,6 +11,10 @@ class SynkaTable {
 	public $columns;
 	public $syncs;
 	
+	/**List of tables that this table links to through foreign keys, if any.
+	 * @var string[]*/
+	public $linkedTables;
+	
 	public function __construct($tableName,$mirrorField) {
 		$this->tableName=$tableName;
 		$this->mirrorField=$mirrorField;

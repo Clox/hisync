@@ -45,6 +45,14 @@ class Synka {
 	public function table($tableName,$mirrorField=null) {
 		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField);
 		$table->columns=$this->dbs['local']->query("desc `$tableName`;")->fetchAll(PDO::FETCH_ASSOC);
+		$table->linkedTables=$this->dbs['local']->query(
+			"SELECT REFERENCED_TABLE_NAME".PHP_EOL
+			."FROM information_schema.TABLE_CONSTRAINTS i".PHP_EOL
+			."LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME".PHP_EOL
+			."WHERE i.CONSTRAINT_TYPE = 'FOREIGN KEY'".PHP_EOL
+			."AND i.TABLE_SCHEMA = DATABASE()".PHP_EOL
+			."AND k.CONSTRAINT_SCHEMA = DATABASE()".PHP_EOL
+			."AND k.TABLE_NAME = '$tableName';")->fetchAll(PDO::FETCH_COLUMN);
 		return $table;
 	}
 	
@@ -65,7 +73,7 @@ class Synka {
 	 * @param SynkaTable $table
 	 */
 	protected function insertUnique($table) {
-		$tableFields=$this->getFieldsToCopy($table);
+		$tableFields=$this->getFieldsToSelect($table);
 		$tableFields_impl=$this->implodeTableFields($tableFields);
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
@@ -87,7 +95,7 @@ class Synka {
 	}
 	
 	protected function insertCompare($table,$compareField,$compareOperator) {
-		$tableFields=$this->getFieldsToCopy($table);
+		$tableFields=$this->getFieldsToSelect($table);
 		$tableFields_impl=$this->implodeTableFields($tableFields);
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
@@ -109,13 +117,22 @@ class Synka {
 	 * @param SynkaTable $table
 	 * @return type
 	 */
-	protected function getFieldsToCopy($table) {
+	protected function getFieldsToSelect($table) {
 		$tableColumns=$table->columns;
 		foreach ($tableColumns as $tableColumn) {
-			if ($tableColumn['Field']===$table->mirrorField||
-			!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")) {
-				$fields[]=$tableColumn['Field'];
+			$addField=false;
+			if ($tableColumn['Field']===$table->mirrorField) {//Always add if this is in the case, even if its
+						//an auto-incremented PK since it should be the same on both sides
+				$addField=true;
+			} else if (!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")) {
+				$addField=true;
+			} else {//if auto-incremented PK
+				//if another syncing table has a FK pointing to this table then we want to select the ID even if
+				//its not going to be inserted into the other DB, but to translate the id of this table from that
+				//of other db to this db when inserting as FK in the other table
+				
 			}
+			$fields[]=$tableColumn['Field'];
 		}
 		return $fields;
 	}

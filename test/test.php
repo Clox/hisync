@@ -31,6 +31,8 @@ $synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">")
 $synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
 
 $synka->table("tickers","tickerSymbol")->insertUnique();
+
+//Finally process all of the added tableSyncs.
 $synka->compare();
 exit;
 
