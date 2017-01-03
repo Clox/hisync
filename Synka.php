@@ -11,6 +11,7 @@
  *
  * @author oscar
  */
+require_once 'SynkaTable.php';
 class Synka {
 	/** @var PDO */
 	protected $localDb;
@@ -25,6 +26,8 @@ class Synka {
 	
 	public $syncData;
 	
+	protected $tables;
+	
 	/**
 	 * 
 	 * @param PDO $localDB
@@ -33,67 +36,19 @@ class Synka {
 	public function __construct($localDB,$remoteDB) {
 		$this->localDb=$localDB;
 		$this->remoteDb=$remoteDB;
+		$this->tables=[];
 		$this->syncEntries=$this->tableColumns=[];
 		$this->dbs=['local'=>$localDB,'remote'=>$remoteDB];
 	}
 	
-	public function syncInsertUnique($tableName, $uniqueField) {
-		$tableFields_impl=$this->getFieldsToCopy($tableName);
-		$otherDb=$this->remoteDb;
-		foreach ($this->dbs as $thisDbKey=>$thisDb) {
-			$otherDb=$thisDb===$this->localDb?$this->remoteDb:$this->localDb;
-			$thisUniqueValues=$thisDb->query("SELECT `$uniqueField` FROM `$tableName`")
-				->fetchAll(PDO::FETCH_COLUMN);
-			$selectMissingRowsQuery="SELECT $tableFields_impl FROM `$tableName`";
-			if (!empty($thisUniqueValues)) {
-				$thisUniqueValuesPlaceholders="?".str_repeat(",?", count($thisUniqueValues)-1);
-				$selectMissingRowsQuery.=PHP_EOL."WHERE `$uniqueField` NOT IN ($thisUniqueValuesPlaceholders)";
-			}
-			$prepSelectMissingRows=$otherDb->prepare($selectMissingRowsQuery);	
-			$prepSelectMissingRows->execute($thisUniqueValues);
-			$thisMissingRows=$prepSelectMissingRows->fetchAll(PDO::FETCH_NUM);
-			if (!empty($thisMissingRows)) {
-				$this->syncData[$thisDbKey][$tableName][]
-					=['type'=>'insert','fields'=>$tableFields_impl,'rows'=>$thisMissingRows];
-			}
-		}
+	/**Adds a table that should be synced or which other syncing tables are linked to.
+	 * Returns a table-object with syncing-methods.
+	 * @param string $tableName The name of the table
+	 * @param string $mirrorField A field that uniquely can identify the rows across both sides if any.
+	 *		This is used when syncing other tables that link to this table.
+	 *		If no syncing tables are linking to this table or if there is no useable field then it may be omitted.
+	 * @return SynkaTable Returns a table-object which has methods for syncing data in that table.*/
+	public function table($tableName,$mirrorField=null) {
+		return $tables[]=new SynkaTable($this,$this->dbs,$tableName,$mirrorField);
 	}
-	
-	public function syncInsertCompare($tableName,$compareField,$compareOperator) {
-		$tableFields_impl=$this->getFieldsToCopy($tableName,$compareField);
-		foreach ($this->dbs as $thisDbKey=>$thisDb) {
-			$otherDb=$thisDb===$this->localDb?$this->remoteDb:$this->localDb;
-			$thisExtremeValue=$thisDb->query("SELECT MAX(`$compareField`) FROM `$tableName`")->fetch(PDO::FETCH_COLUMN);
-			$thisMissingRows=$otherDb->query("SELECT $tableFields_impl".PHP_EOL
-				."FROM `$tableName` WHERE `$compareField`>$thisExtremeValue")->fetchAll(PDO::FETCH_NUM);
-			if (!empty($thisMissingRows)) {
-				$this->syncData[$thisDbKey][$tableName][]
-					=['type'=>'insert','fields'=>$tableFields_impl,'rows'=>$thisMissingRows];
-				break;
-			}
-		}
-	}
-	
-	protected function getTableColumns($tableName) {
-		if (!key_exists($tableName, $this->tableColumns)) {
-			$this->tableColumns[$tableName]=$this->localDb->query("SHOW columns FROM `$tableName`;")
-					->fetchAll(PDO::FETCH_ASSOC);
-		}
-		return $this->tableColumns[$tableName];
-	}
-	
-	protected function getFieldsToCopy($tableName,$alwaysAdd=null) {
-		$tableColumns=$this->getTableColumns($tableName);
-		$tableFields_impl="";
-		foreach ($tableColumns as $tableColumn) {
-			if ($tableColumn['Field']===$alwaysAdd
-			||!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")) {
-				if (!empty($tableFields_impl))
-					$tableFields_impl.=",";
-				$tableFields_impl.="`$tableColumn[Field]`";
-			}
-		}
-		return $tableFields_impl;
-	}
-	
 }

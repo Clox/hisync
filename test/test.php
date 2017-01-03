@@ -13,9 +13,24 @@ require_once '../Synka.php';
 $local=new PDO('mysql:host=localhost:3306;dbname=fundtracker;charset=utf8', 'fundtracker', 'blomma22');
 $remote=new PDO('mysql:host=localhost:3306;dbname=fundtrackertest;charset=utf8', 'fundtracker', 'blomma22');
 $synka=new Synka($local,$remote);
-$synka->syncInsertUnique("strategies", "id");
-$synka->syncInsertUnique("exchanges","exchangeName");
-$synka->syncInsertCompare("funds","id",">");
+
+//since addTableSync() here has no second parameter(unique field for identifying the same rows across databases it
+//will be assumed its pk should be the same on both sides.
+$synka->table("strategies","id")->insertUnique();
+
+$synka->table("exchanges","exchangeName")->insertUnique();
+$synka->table("funds","id")->insertCompare("id",">");
+
+//since the funds-table was added with "id" as mirrorField, the below method will know that the FK values in
+//fundratings that are pointing to funds are same on both sides and can just copy them directly rather than having to 
+//link old ids to new ids
+$synka->table("fundratings","id")->insertCompare("id",">");
+
+$synka->table("portfolio_snapshots","id")->insertCompare("id",">");
+$synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">");
+$synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
+
+$synka->table("tickers","tickerSymbol")->insertUnique();
 exit;
 
 //Synka->syncInsertUnique
