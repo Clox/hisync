@@ -13,19 +13,15 @@
  */
 require_once 'SynkaTable.php';
 class Synka {
-	/** @var PDO */
-	protected $localDb;
-	
-	/** @var PDO */
-	protected $remoteDb;
-	
 	/**@var PDO[] */
 	protected $dbs;//an array of the two above variables, keys being local & remote
 	
-	protected $tableColumns;
-	
 	public $syncData;
 	
+	/**
+	 *
+	 * @var SynkaTable[] 
+	 */
 	protected $tables;
 	
 	/**
@@ -34,10 +30,8 @@ class Synka {
 	 * @param PDO $remoteDB
 	 */
 	public function __construct($localDB,$remoteDB) {
-		$this->localDb=$localDB;
-		$this->remoteDb=$remoteDB;
 		$this->tables=[];
-		$this->syncEntries=$this->tableColumns=[];
+		$this->syncData=[];
 		$this->dbs=['local'=>$localDB,'remote'=>$remoteDB];
 	}
 	
@@ -49,6 +43,84 @@ class Synka {
 	 *		If no syncing tables are linking to this table or if there is no useable field then it may be omitted.
 	 * @return SynkaTable Returns a table-object which has methods for syncing data in that table.*/
 	public function table($tableName,$mirrorField=null) {
-		return $tables[]=new SynkaTable($this,$this->dbs,$tableName,$mirrorField);
+		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField);
+		$table->columns=$this->dbs['local']->query("desc `$tableName`;")->fetchAll(PDO::FETCH_ASSOC);
+		return $table;
+	}
+	
+	public function compare() {
+		foreach ($this->tables as $table) {
+			$syncs=$table->syncs;
+			if (key_exists('insertUnique', $syncs)) {
+				$this->insertUnique($table);
+			} else if (key_exists('insertCompare', $syncs)) {
+				$sync=$syncs['insertCompare'];
+				$this->insertCompare($table,$sync['compareField'],$sync['compareOperator']);
+			}
+		}
+	}
+	
+	/**
+	 * 
+	 * @param SynkaTable $table
+	 */
+	protected function insertUnique($table) {
+		$tableFields=$this->getFieldsToCopy($table);
+		$tableFields_impl=$this->implodeTableFields($tableFields);
+		foreach ($this->dbs as $thisDbKey=>$thisDb) {
+			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
+			$thisUniqueValues=$thisDb->query("SELECT `$table->mirrorField` FROM `$table->tableName`")
+				->fetchAll(PDO::FETCH_COLUMN);
+			$selectMissingRowsQuery="SELECT $tableFields_impl FROM `$table->tableName`";
+			if (!empty($thisUniqueValues)) {
+				$thisUniqueValuesPlaceholders="?".str_repeat(",?", count($thisUniqueValues)-1);
+				$selectMissingRowsQuery.=PHP_EOL."WHERE `$table->mirrorField` NOT IN ($thisUniqueValuesPlaceholders)";
+			}
+			$prepSelectMissingRows=$otherDb->prepare($selectMissingRowsQuery);	
+			$prepSelectMissingRows->execute($thisUniqueValues);
+			$thisMissingRows=$prepSelectMissingRows->fetchAll(PDO::FETCH_NUM);
+			if (!empty($thisMissingRows)) {
+				$this->syncData[$table->tableName]['fields']=$tableFields;
+				$this->syncData[$table->tableName]['insertRows'][$thisDbKey]=$thisMissingRows;
+			}
+		}
+	}
+	
+	protected function insertCompare($table,$compareField,$compareOperator) {
+		$tableFields=$this->getFieldsToCopy($table);
+		$tableFields_impl=$this->implodeTableFields($tableFields);
+		foreach ($this->dbs as $thisDbKey=>$thisDb) {
+			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
+			$thisExtremeValue=$thisDb->query("SELECT MAX(`$compareField`) FROM `$table->tableName`")
+					->fetch(PDO::FETCH_COLUMN);
+			$thisMissingRows=$otherDb->query("SELECT $tableFields_impl".PHP_EOL
+				."FROM `$table->tableName` WHERE `$compareField`$compareOperator$thisExtremeValue")
+				->fetchAll(PDO::FETCH_NUM);
+			if (!empty($thisMissingRows)) {
+				$this->syncData[$table->tableName]['fields']=$tableFields;
+				$this->syncData[$table->tableName]['insertRows'][$thisDbKey]=$thisMissingRows;
+				break;
+			}
+		}
+	}
+	
+	/**
+	 * 
+	 * @param SynkaTable $table
+	 * @return type
+	 */
+	protected function getFieldsToCopy($table) {
+		$tableColumns=$table->columns;
+		foreach ($tableColumns as $tableColumn) {
+			if ($tableColumn['Field']===$table->mirrorField||
+			!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")) {
+				$fields[]=$tableColumn['Field'];
+			}
+		}
+		return $fields;
+	}
+	
+	protected function implodeTableFields($fields) {
+		return "`".implode('`,`',$fields).'`';
 	}
 }
