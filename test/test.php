@@ -27,8 +27,8 @@ $synka->table("fundratings","id")->insertCompare("id",">");
 
 $synka->table("portfolio_snapshots","id")->insertCompare("id",">");
 $synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">");
-$synka->table("securities")->insertCompare("id",">");
-$synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
+//$synka->table("securities")->insertCompare("id",">");
+//$synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
 
 //since addTableSync() here has no second parameter(unique field for identifying the same rows across databases it
 //will be assumed its pk should be the same on both sides.
@@ -39,7 +39,9 @@ $synka->table("exchanges","exchangeName")->insertUnique();
 $synka->table("tickers","tickerSymbol")->insertUnique();
 
 //Finally process all of the added tableSyncs.
-$synka->compare();
+$syncData=$synka->compare();
+
+$synka->sync();
 exit;
 
 //Synka->syncInsertUnique

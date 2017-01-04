@@ -9,8 +9,9 @@ class SynkaTable {
 	public $tableName;
 	public $mirrorField;
 	public $columns;
-	public $syncs;
-	public $mirrorPk;
+	public $syncs=[];
+	public $pk;
+	public $mirrorPk=false;
 	public $translateIds;
 	
 	/**List of tables that this table links to through foreign keys, if any.
@@ -23,18 +24,14 @@ class SynkaTable {
 	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
 		$this->mirrorField=$mirrorField;
-		$this->syncs=[];
 		$this->columns=$columns;
-		$this->mirrorPk=false;
-		$this->mirrorValsToGetIdsFor=[];
-		if ($mirrorField) {
-			foreach ($columns as $column) {
+		foreach ($columns as $column) {
+			if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
+				$this->pk=$column['Field'];
 				if ($column['Field']===$mirrorField) {
-					if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
-						$this->mirrorPk=true;
-					}
-					break;
+					$this->mirrorPk=true;
 				}
+				break;
 			}
 		}
 		$this->linkedTables=$linkedTables;
