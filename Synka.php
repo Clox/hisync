@@ -1,5 +1,7 @@
 <?php
-
+//TODO
+//Get rid of $linkedTables in SynkaTable and only use syncingData instead
+//Get rid of mirrorPK? instead only have pkField and mirror Field and check for equality
 /*
  * To change this license header, choose License Headers in Project Properties.
  * To change this template file, choose Tools | Templates
@@ -71,7 +73,8 @@ class Synka {
 			)->fetchAll(PDO::FETCH_GROUP|PDO::FETCH_UNIQUE|PDO::FETCH_ASSOC);
 		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField,$columns,$linkedTables);
 		
-		$this->syncData[$tableName]=['name'=>$tableName,'mirrorField'=>$mirrorField,'mirrorPk'=>$table->mirrorPk];
+		$this->syncData[$tableName]=
+			['name'=>$tableName,'mirrorField'=>$mirrorField,'mirrorPk'=>$table->mirrorPk,'pkField'=>$table->pk];
 		foreach ($linkedTables as $referencedTable=>$link) {
 			$this->syncData[$tableName]['fks'][$link['COLUMN_NAME']]=$referencedTable;
 		}
@@ -145,14 +148,18 @@ class Synka {
 						$firstInsertedRowId=$this->insertRows($syncTable, $thisDbKey,$thisDb);
 					}
 					if (!empty($syncTable[$thisDbKey]['translateIds'])) {
-						foreach ($syncTable[$thisDbKey]['translateInsertionIds'] as $offset=>$oldId) {
-							$pkTranslation[$oldId]=$firstInsertedRowId+$offset;
+						$pkTranslation=[];
+						$translationsToProcess=$syncTable[$thisDbKey]['translateIds'];
+						if (!empty($syncTable[$thisDbKey]['translateInsertionIds'])) {
+							foreach ($syncTable[$thisDbKey]['translateInsertionIds'] as $offset=>$oldId) {
+								$pkTranslation[$oldId]=$firstInsertedRowId+$offset;
+							}
+							$translationsToProcess=array_keys(array_diff_key($translationsToProcess,$pkTranslation));
 						}
-						$remainingTranslations
-							=array_keys(array_diff_key($syncTable[$thisDbKey]['translateIds'],$pkTranslation));
-						if (!empty($remainingTranslations)) {
+						
+						if (!empty($translationsToProcess)) {
 							$pkTranslation
-								+=$this->translatePkViaMirror($otherDb,$thisDb,$syncTable,$remainingTranslations);
+								+=$this->translatePkViaMirror($otherDb,$thisDb,$syncTable,$translationsToProcess);
 						}
 						$this->syncData[$syncTableName][$thisDbKey]['pkTranslation']=$pkTranslation;
 						//translateIds is an associative array of all ids we need translated as keys, and simply
@@ -184,7 +191,7 @@ class Synka {
 		asort($oldPkToMirror);
 		$prepSelectNewIds=$toDb->prepare(
 			"SELECT `$syncTable[pkField]` FROM `$syncTable[name]`".PHP_EOL
-			."WHERE `$syncTable[mirrorField] IN ($placeholders) ORDER BY `$syncTable[mirrorField]`");
+			."WHERE `$syncTable[mirrorField]` IN ($placeholders) ORDER BY `$syncTable[mirrorField]`");
 		$prepSelectNewIds->execute($mirrorValues);
 		$newIds=$prepSelectNewIds->fetchAll(PDO::FETCH_COLUMN);
 		return array_combine(array_keys($oldPkToMirror), $newIds);
@@ -243,8 +250,7 @@ class Synka {
 	 * @param type $rows
 	 */
 	protected function addSyncData($table,$tableColumns,$dbKey,$type,$rows) {
-		//
-			if ($table->pk&&!$table->mirrorPk) {
+			if ($table->pk&&!$table->mirrorPk&&isset($this->syncData[$table->tableName]['linkedTo'])) {
 				$pkIndex=array_search($table->pk, $tableColumns);
 				unset($tableColumns[$pkIndex]);
 				$this->syncData[$table->tableName][$dbKey]['translateInsertionIds']=self::unsetColumn2dArray($rows,$pkIndex);
@@ -259,6 +265,7 @@ class Synka {
 					$linkedColumn=$link['COLUMN_NAME'];
 					$fkIndex=array_search($linkedColumn, $tableColumns);
 					$translateIds=array_column($rows, $fkIndex);
+					$this->syncData[$referencedTableName]['linkedTo']=true;
 					if (!(count($translateIds)===1&&!$translateIds[0])) {
 						//do array_fill_keys because we want the ids as keys to avoid duplicates, and choose TRUE as
 						//value instead of flipping and getting random integers.
@@ -282,20 +289,8 @@ class Synka {
 	protected function getFieldsToSelect($table) {
 		$tableColumns=$table->columns;
 		foreach ($tableColumns as $tableColumn) {
-			$addField=false;
-			if ($tableColumn['Field']!==$table->pk||$table->mirrorPk) {
-				$addField=true;
-			} else {
-				//if another syncing table has a FK pointing to this table then we want to select the ID even if
-				//its not going to be inserted into the other DB, but to translate the id of this table from that
-				//of other db to this db when inserting as FK in the other table
-				foreach ($this->tables as $otherTable) {
-					if ($otherTable!==$table&&isset($otherTable->linkedTables[$table->tableName])) {
-						$addField=true;
-					}
-				}
-			}
-			if ($addField) {
+			if ($tableColumn['Field']!==$table->pk||$table->mirrorPk
+			||isset($this->syncData[$table->tableName]['linkedTo'])) {
 				$fields[]=$tableColumn['Field'];
 			}
 		}

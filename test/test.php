@@ -11,7 +11,9 @@
 require_once '../Synka.php';
 
 $local=new PDO('mysql:host=localhost:3306;dbname=fundtracker;charset=utf8', 'fundtracker', 'blomma22');
+$local->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $remote=new PDO('mysql:host=localhost:3306;dbname=fundtrackertest;charset=utf8', 'fundtracker', 'blomma22');
+$remote->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $synka=new Synka($local,$remote);
 
 //needed because otherwise there will be an error when trying to access portfolios in syncData to place
