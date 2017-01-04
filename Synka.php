@@ -54,14 +54,14 @@ class Synka {
 			$ignoredColumns_impl="'".implode("','",$ignoredColumns)."'";
 			$exceptColumns=PHP_EOL."AND COLUMN_NAME NOT IN ($ignoredColumns_impl)";
 		}
-		$columns=$this->dbs['local']->query(
+		$columns=$this->dbs['local']->query(//get all columns of this table except manually ignored ones
 			"SELECT COLUMN_NAME Field,COLUMN_KEY 'Key',EXTRA Extra".PHP_EOL
 			."FROM INFORMATION_SCHEMA.COLUMNS".PHP_EOL
 			."WHERE TABLE_SCHEMA=DATABASE()".PHP_EOL
 			."AND TABLE_NAME='$tableName'"
 			.$exceptColumns
 			)->fetchAll(PDO::FETCH_ASSOC);
-		$linkedTables=$this->dbs['local']->query(
+		$linkedTables=$this->dbs['local']->query(//get all tables linked to by this table, and their linked columns
 			"SELECT REFERENCED_TABLE_NAME,COLUMN_NAME,REFERENCED_COLUMN_NAME".PHP_EOL
 			."FROM information_schema.TABLE_CONSTRAINTS i".PHP_EOL
 			."LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
@@ -72,11 +72,11 @@ class Synka {
 			.$exceptColumns
 			)->fetchAll(PDO::FETCH_GROUP|PDO::FETCH_UNIQUE|PDO::FETCH_ASSOC);
 		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField,$columns,$linkedTables);
-		
-		$this->syncData[$tableName]=
-			['name'=>$tableName,'mirrorField'=>$mirrorField,'mirrorPk'=>$table->mirrorPk,'pkField'=>$table->pk];
+		$this->syncData[$tableName]=['name'=>$tableName,'mirrorField'=>$mirrorField,'pkField'=>$table->pk,
+			'local'=>['translateIds'=>[]],'remote'=>['translateIds'=>[]]];
 		foreach ($linkedTables as $referencedTable=>$link) {
-			$this->syncData[$tableName]['fks'][$link['COLUMN_NAME']]=$referencedTable;
+			if ($this->syncData[$referencedTable]['mirrorField']!==$this->syncData[$referencedTable]['pkField'])
+				$this->syncData[$tableName]['fks'][$link['COLUMN_NAME']]=$referencedTable;
 		}
 		
 		return $table;
@@ -87,10 +87,11 @@ class Synka {
 	 * @param SynkaTable $table
 	 */
 	protected function insertUnique($table) {
-		$tableFields=$this->getFieldsToSelect($table);
-		$tableFields_impl=$this->implodeTableFields($tableFields);
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
+			
+			$tableFields=$this->getFieldsToSelect($table,$thisDbKey);
+			$tableFields_impl=$this->implodeTableFields($tableFields);
 			$thisUniqueValues=$thisDb->query("SELECT `$table->mirrorField` FROM `$table->tableName`")
 				->fetchAll(PDO::FETCH_COLUMN);
 			$selectMissingRowsQuery="SELECT $tableFields_impl FROM `$table->tableName`";
@@ -108,15 +109,20 @@ class Synka {
 	}
 	
 	protected function insertCompare($table,$compareField,$compareOperator) {
-		$tableFields=$this->getFieldsToSelect($table);
-		$tableFields_impl=$this->implodeTableFields($tableFields);
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
+			$tableFields=$this->getFieldsToSelect($table,$thisDbKey);
+			$tableFields_impl=$this->implodeTableFields($tableFields);
 			$thisExtremeValue=$thisDb->query("SELECT MAX(`$compareField`) FROM `$table->tableName`")
 					->fetch(PDO::FETCH_COLUMN);
-			$thisMissingRows=$otherDb->query("SELECT $tableFields_impl".PHP_EOL
-				."FROM `$table->tableName` WHERE `$compareField`$compareOperator$thisExtremeValue")
-				->fetchAll(PDO::FETCH_NUM);
+			$query="SELECT $tableFields_impl".PHP_EOL
+				."FROM `$table->tableName`";
+			if ($thisExtremeValue) {
+				$query.=PHP_EOL."WHERE `$compareField`$compareOperator?";
+			}
+			$prepSelectMissingRows=$otherDb->prepare($query);
+			$prepSelectMissingRows->execute([$thisExtremeValue]);
+			$thisMissingRows=$prepSelectMissingRows->fetchAll(PDO::FETCH_NUM);
 			if (!empty($thisMissingRows)) {
 				$this->addSyncData($table,$tableFields,$thisDbKey,"insertRows",$thisMissingRows);
 				break;
@@ -125,7 +131,8 @@ class Synka {
 	}
 	
 	public function compare() {
-		$this->compared&&trigger_error("compare() or sync() has already been called, can't call again.");
+		$this->compared&&trigger_error("compare() (or sync()) has already been called, can't call again.");
+		$this->compared=true;
 		foreach ($this->tables as $table) {
 			$syncs=$table->syncs;
 			if (key_exists('insertUnique', $syncs)) {
@@ -139,34 +146,33 @@ class Synka {
 	}
 	
 	public function sync() {
+		$this->synced&&trigger_error("sync() has already been called, can't call again.");
 		!$this->compared&&$this->compare();
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
 			foreach ($this->syncData as $syncTableName=>$syncTable) {
-				if (key_exists($thisDbKey, $syncTable)) {
-					if (key_exists('insertRows', $syncTable[$thisDbKey])) {
-						$firstInsertedRowId=$this->insertRows($syncTable, $thisDbKey,$thisDb);
-					}
-					if (!empty($syncTable[$thisDbKey]['translateIds'])) {
-						$pkTranslation=[];
-						$translationsToProcess=$syncTable[$thisDbKey]['translateIds'];
-						if (!empty($syncTable[$thisDbKey]['translateInsertionIds'])) {
-							foreach ($syncTable[$thisDbKey]['translateInsertionIds'] as $offset=>$oldId) {
-								$pkTranslation[$oldId]=$firstInsertedRowId+$offset;
-							}
-							$translationsToProcess=array_keys(array_diff_key($translationsToProcess,$pkTranslation));
+				if (isset($syncTable[$thisDbKey]['insertRows'])) {
+					$firstInsertedRowId=$this->insertRows($syncTable, $thisDbKey,$thisDb);
+				}
+				if (!empty($syncTable[$thisDbKey]['translateIds'])) {
+					$pkTranslation=[];
+					$translationsToProcess=$syncTable[$thisDbKey]['translateIds'];
+					if (!empty($syncTable[$thisDbKey]['translateInsertionIds'])) {
+						foreach ($syncTable[$thisDbKey]['translateInsertionIds'] as $offset=>$oldId) {
+							$pkTranslation[$oldId]=$firstInsertedRowId+$offset;
 						}
-						
-						if (!empty($translationsToProcess)) {
-							$pkTranslation
-								+=$this->translatePkViaMirror($otherDb,$thisDb,$syncTable,$translationsToProcess);
-						}
-						$this->syncData[$syncTableName][$thisDbKey]['pkTranslation']=$pkTranslation;
-						//translateIds is an associative array of all ids we need translated as keys, and simply
-						//true as the values
-						//translateInsertionIds is an indexed array where index is the offset in the rows of the just
-						//inserted rows, and value is id from the table they were copied from
+						$translationsToProcess=array_keys(array_diff_key($translationsToProcess,$pkTranslation));
 					}
+
+					if (!empty($translationsToProcess)) {
+						$pkTranslation+=$this->translatePkViaMirror
+							($otherDb,$thisDb,$syncTable,array_keys($translationsToProcess));
+					}
+					$this->syncData[$syncTableName][$thisDbKey]['pkTranslation']=$pkTranslation;
+					//translateIds is an associative array of all ids we need translated as keys, and simply
+					//true as the values
+					//translateInsertionIds is an indexed array where index is the offset in the rows of the just
+					//inserted rows, and value is id from the table they were copied from
 				}
 			}
 		}
@@ -182,7 +188,7 @@ class Synka {
 	protected function translatePkViaMirror($fromDb, $toDb, $syncTable, $fromIds) {
 		sort ($fromIds);
 		$placeholders='?'.str_repeat(',?', count($fromIds)-1);
-		$prepSelectMirrorValues=$fromDb->prepare(
+		$prepSelectMirrorValues=$fromDb->prepare($query=
 			"SELECT `$syncTable[mirrorField]` FROM `$syncTable[name]`".PHP_EOL
 			."WHERE `$syncTable[pkField]` IN ($placeholders) ORDER BY `$syncTable[pkField]`");
 		$prepSelectMirrorValues->execute($fromIds);
@@ -204,12 +210,12 @@ class Synka {
 	 * @param PDO $db
 	 */
 	protected function insertRows($syncTable,$dbKey,$db) {
-		$cols_impl="`".implode("`,`",$syncTable['columns'])."`";
-		$colsPlaceholders='?'.str_repeat(',?', count($syncTable['columns'])-1);
+		$cols_impl="`".implode("`,`",$syncTable[$dbKey]['columns'])."`";
+		$colsPlaceholders='?'.str_repeat(',?', count($syncTable[$dbKey]['columns'])-1);
 		$rows=$syncTable[$dbKey]['insertRows'];
-		if (!empty($syncTable['fks'])) {
+		if (!empty($syncTable['fks'])) {//if this table has any fks that need to be translated before insertion
 			foreach ($syncTable['fks'] as $columnName=>$referencedTable) {
-				$columnIndex=array_search($columnName, $syncTable['columns']);
+				$columnIndex=array_search($columnName, $syncTable[$dbKey]['columns']);
 				foreach ($rows as $rowIndex=>$row) {
 					if ($row[$columnIndex]) {
 						$rows[$rowIndex][$columnIndex]=
@@ -250,31 +256,27 @@ class Synka {
 	 * @param type $rows
 	 */
 	protected function addSyncData($table,$tableColumns,$dbKey,$type,$rows) {
-			if ($table->pk&&!$table->mirrorPk&&isset($this->syncData[$table->tableName]['linkedTo'])) {
+			if (!empty($this->syncData[$table->tableName][$dbKey]['translateIds'])) {
 				$pkIndex=array_search($table->pk, $tableColumns);
 				unset($tableColumns[$pkIndex]);
 				$this->syncData[$table->tableName][$dbKey]['translateInsertionIds']=self::unsetColumn2dArray($rows,$pkIndex);
 			}
 			
-		$this->syncData[$table->tableName]['columns']=$tableColumns;
+		$this->syncData[$table->tableName][$dbKey]['columns']=$tableColumns;
 		$this->syncData[$table->tableName][$dbKey][$type]=$rows;
 		
 		if (!empty($table->linkedTables)) {
 			foreach ($table->linkedTables as $referencedTableName=>$link) {
-				if (!$this->syncData[$referencedTableName]['mirrorPk']) {
+				$referencedTable=$this->syncData[$referencedTableName];
+				if ($referencedTable['mirrorField']!==$referencedTable['pkField']) {
 					$linkedColumn=$link['COLUMN_NAME'];
 					$fkIndex=array_search($linkedColumn, $tableColumns);
 					$translateIds=array_column($rows, $fkIndex);
-					$this->syncData[$referencedTableName]['linkedTo']=true;
 					if (!(count($translateIds)===1&&!$translateIds[0])) {
 						//do array_fill_keys because we want the ids as keys to avoid duplicates, and choose TRUE as
 						//value instead of flipping and getting random integers.
-						$translateIds=array_fill_keys(array_column($rows, $fkIndex), TRUE);
-						if (isset($this->syncData[$referencedTableName][$dbKey]['translateIds'])) {
-							$this->syncData[$referencedTableName][$dbKey]['translateIds']+=$translateIds;
-						} else {
-							$this->syncData[$referencedTableName][$dbKey]['translateIds']=$translateIds;
-						}
+						$this->syncData[$referencedTableName][$dbKey]['translateIds']
+							+=array_fill_keys(array_column($rows, $fkIndex), TRUE);
 					}
 				}
 			}
@@ -286,11 +288,11 @@ class Synka {
 	 * @param SynkaTable $table
 	 * @return type
 	 */
-	protected function getFieldsToSelect($table) {
+	protected function getFieldsToSelect($table,$dbKey) {
 		$tableColumns=$table->columns;
 		foreach ($tableColumns as $tableColumn) {
-			if ($tableColumn['Field']!==$table->pk||$table->mirrorPk
-			||isset($this->syncData[$table->tableName]['linkedTo'])) {
+			if ($tableColumn['Field']!==$table->pk||$table->pk===$table->mirrorField
+			||!empty($this->syncData[$table->tableName][$dbKey]['translateIds'])) {
 				$fields[]=$tableColumn['Field'];
 			}
 		}

@@ -11,7 +11,6 @@ class SynkaTable {
 	public $columns;
 	public $syncs=[];
 	public $pk;
-	public $mirrorPk=false;
 	public $translateIds;
 	
 	/**List of tables that this table links to through foreign keys, if any.
@@ -28,9 +27,6 @@ class SynkaTable {
 		foreach ($columns as $column) {
 			if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
 				$this->pk=$column['Field'];
-				if ($column['Field']===$mirrorField) {
-					$this->mirrorPk=true;
-				}
 				break;
 			}
 		}
