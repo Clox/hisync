@@ -10,15 +10,34 @@ class SynkaTable {
 	public $mirrorField;
 	public $columns;
 	public $syncs;
+	public $mirrorPk;
+	public $translateIds;
 	
 	/**List of tables that this table links to through foreign keys, if any.
+	 * Key is the name of the referenced table, value is:
+	 * array ["COLUM_NAME"=>string name of the fk-field in this table,
+	 * "REFERENCED_COLUMN_NAME"=>string name of the field in the other table that the fk-field of this table points to]
 	 * @var string[]*/
 	public $linkedTables;
 	
-	public function __construct($tableName,$mirrorField) {
+	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
 		$this->mirrorField=$mirrorField;
 		$this->syncs=[];
+		$this->columns=$columns;
+		$this->mirrorPk=false;
+		$this->mirrorValsToGetIdsFor=[];
+		if ($mirrorField) {
+			foreach ($columns as $column) {
+				if ($column['Field']===$mirrorField) {
+					if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
+						$this->mirrorPk=true;
+					}
+					break;
+				}
+			}
+		}
+		$this->linkedTables=$linkedTables;
 	}
 	
 	public function insertUnique() {

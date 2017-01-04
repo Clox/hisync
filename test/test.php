@@ -14,11 +14,10 @@ $local=new PDO('mysql:host=localhost:3306;dbname=fundtracker;charset=utf8', 'fun
 $remote=new PDO('mysql:host=localhost:3306;dbname=fundtrackertest;charset=utf8', 'fundtracker', 'blomma22');
 $synka=new Synka($local,$remote);
 
-//since addTableSync() here has no second parameter(unique field for identifying the same rows across databases it
-//will be assumed its pk should be the same on both sides.
-$synka->table("strategies","id")->insertUnique();
+//needed because otherwise there will be an error when trying to access portfolios in syncData to place
+//translateId's in it, but that's the only reason
+$synka->table("portfolios");
 
-$synka->table("exchanges","exchangeName")->insertUnique();
 $synka->table("funds","id")->insertCompare("id",">");
 
 //since the funds-table was added with "id" as mirrorField, the below method will know that the FK values in
@@ -28,7 +27,14 @@ $synka->table("fundratings","id")->insertCompare("id",">");
 
 $synka->table("portfolio_snapshots","id")->insertCompare("id",">");
 $synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">");
+$synka->table("securities")->insertCompare("id",">");
 $synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
+
+//since addTableSync() here has no second parameter(unique field for identifying the same rows across databases it
+//will be assumed its pk should be the same on both sides.
+$synka->table("strategies","id")->insertUnique();
+
+$synka->table("exchanges","exchangeName")->insertUnique();
 
 $synka->table("tickers","tickerSymbol")->insertUnique();
 
@@ -64,9 +70,9 @@ $synka->syncInsertCompare("funds","id",">");
 $synka->syncInsertCompare("fundratings","id",">");
 $synka->syncInsertCompare("portfolio_snapshots","id",">");
 $synka->syncInsertCompare("portfolio_snapshots_in_portfolios","id",">");
+$synka->syncInsertCompare("securities","id",">");
 $synka->syncInsertRowsOfNewFk("portfoliorows");
 $synka->syncInsertUnique("tickers","tickerSymbol");
-$synka->syncInsertCompare("securities","id",">");
 $synka->syncInsertCompare("dividends","time1",">","tickerId");
 $synka->syncInsertCompare("quotes","date",">","tickerId");
 $synka->syncInsertCompare("splits","time1",">","tickerId");

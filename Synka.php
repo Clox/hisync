@@ -41,18 +41,35 @@ class Synka {
 	 * @param string $mirrorField A field that uniquely can identify the rows across both sides if any.
 	 *		This is used when syncing other tables that link to this table.
 	 *		If no syncing tables are linking to this table or if there is no useable field then it may be omitted.
+	 * @param string[] $ignoredColumns Optionally an array of columns that should be ignored for this table.
 	 * @return SynkaTable Returns a table-object which has methods for syncing data in that table.*/
-	public function table($tableName,$mirrorField=null) {
-		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField);
-		$table->columns=$this->dbs['local']->query("desc `$tableName`;")->fetchAll(PDO::FETCH_ASSOC);
-		$table->linkedTables=$this->dbs['local']->query(
-			"SELECT REFERENCED_TABLE_NAME".PHP_EOL
+	public function table($tableName,$mirrorField=null,$ignoredColumns=null) {
+		$exceptColumns="";
+		if (!empty($ignoredColumns)) {
+			$ignoredColumns_impl="'".implode("','",$ignoredColumns)."'";
+			$exceptColumns=PHP_EOL."AND COLUMN_NAME NOT IN ($ignoredColumns_impl)";
+		}
+		$columns=$this->dbs['local']->query(
+			"SELECT COLUMN_NAME Field,COLUMN_KEY 'Key',EXTRA Extra".PHP_EOL
+			."FROM INFORMATION_SCHEMA.COLUMNS".PHP_EOL
+			."WHERE TABLE_SCHEMA=DATABASE()".PHP_EOL
+			."AND TABLE_NAME='$tableName'"
+			.$exceptColumns
+			)->fetchAll(PDO::FETCH_ASSOC);
+		$linkedTables=$this->dbs['local']->query(
+			"SELECT REFERENCED_TABLE_NAME,COLUMN_NAME,REFERENCED_COLUMN_NAME".PHP_EOL
 			."FROM information_schema.TABLE_CONSTRAINTS i".PHP_EOL
-			."LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME".PHP_EOL
+			."LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
+				." ON i.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND i.TABLE_SCHEMA=k.CONSTRAINT_SCHEMA".PHP_EOL
 			."WHERE i.CONSTRAINT_TYPE = 'FOREIGN KEY'".PHP_EOL
-			."AND i.TABLE_SCHEMA = DATABASE()".PHP_EOL
 			."AND k.CONSTRAINT_SCHEMA = DATABASE()".PHP_EOL
-			."AND k.TABLE_NAME = '$tableName';")->fetchAll(PDO::FETCH_COLUMN);
+			."AND k.TABLE_NAME = '$tableName'"
+			.$exceptColumns
+			)->fetchAll(PDO::FETCH_GROUP|PDO::FETCH_UNIQUE|PDO::FETCH_ASSOC);
+		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField,$columns,$linkedTables);
+		
+		$this->syncData[$tableName]=['mirrorPk'=>$table->mirrorPk];
+		
 		return $table;
 	}
 	
@@ -88,8 +105,7 @@ class Synka {
 			$prepSelectMissingRows->execute($thisUniqueValues);
 			$thisMissingRows=$prepSelectMissingRows->fetchAll(PDO::FETCH_NUM);
 			if (!empty($thisMissingRows)) {
-				$this->syncData[$table->tableName]['fields']=$tableFields;
-				$this->syncData[$table->tableName]['insertRows'][$thisDbKey]=$thisMissingRows;
+				$this->addSyncData($table,$tableFields,$thisDbKey,"insertRows",$thisMissingRows);
 			}
 		}
 	}
@@ -105,9 +121,45 @@ class Synka {
 				."FROM `$table->tableName` WHERE `$compareField`$compareOperator$thisExtremeValue")
 				->fetchAll(PDO::FETCH_NUM);
 			if (!empty($thisMissingRows)) {
-				$this->syncData[$table->tableName]['fields']=$tableFields;
-				$this->syncData[$table->tableName]['insertRows'][$thisDbKey]=$thisMissingRows;
+				$this->addSyncData($table,$tableFields,$thisDbKey,"insertRows",$thisMissingRows);
 				break;
+			}
+		}
+	}
+	
+	/**
+	 * 
+	 * @param SynkaTable $table
+	 * @param type $tableFields
+	 * @param type $dbKey
+	 * @param type $type
+	 * @param type $rows
+	 */
+	protected function addSyncData($table,$tableFields,$dbKey,$type,$rows) {
+		$this->syncData[$table->tableName]['fields']=$tableFields;
+		$this->syncData[$table->tableName][$dbKey][$type]=$rows;
+		
+		if (!empty($table->linkedTables)) {
+			foreach ($table->linkedTables as $referencedTableName=>$link) {
+				if (!$this->syncData[$referencedTableName]['mirrorPk']) {
+					$linkedColumn=$link['COLUMN_NAME'];
+					foreach ($table->columns as $columnIndex=>$column) {
+						if ($column['Field']===$linkedColumn) {
+							break;
+						}
+					}
+					$translateIds=array_column($rows, $columnIndex);
+					if (!(count($translateIds)===1&&!$translateIds[0])) {
+						//do array_fill_keys because we want the ids as keys to avoid duplicates, and choose TRUE as
+						//value instead of flipping and getting random integers.
+						$translateIds=array_fill_keys(array_column($rows, $columnIndex), TRUE);
+						if (isset($this->syncData[$referencedTableName][$dbKey]['translateIds'])) {
+							$this->syncData[$referencedTableName][$dbKey]['translateIds']+=$translateIds;
+						} else {
+							$this->syncData[$referencedTableName][$dbKey]['translateIds']=$translateIds;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -121,18 +173,21 @@ class Synka {
 		$tableColumns=$table->columns;
 		foreach ($tableColumns as $tableColumn) {
 			$addField=false;
-			if ($tableColumn['Field']===$table->mirrorField) {//Always add if this is in the case, even if its
-						//an auto-incremented PK since it should be the same on both sides
+			if (!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")||$table->mirrorPk) {
 				$addField=true;
-			} else if (!($tableColumn['Key']==="PRI"&&$tableColumn['Extra']==="auto_increment")) {
-				$addField=true;
-			} else {//if auto-incremented PK
+			} else {
 				//if another syncing table has a FK pointing to this table then we want to select the ID even if
 				//its not going to be inserted into the other DB, but to translate the id of this table from that
 				//of other db to this db when inserting as FK in the other table
-				
+				foreach ($this->tables as $otherTable) {
+					if ($otherTable!==$table&&isset($otherTable->linkedTables[$table->tableName])) {
+						$addField=true;
+					}
+				}
 			}
-			$fields[]=$tableColumn['Field'];
+			if ($addField) {
+				$fields[]=$tableColumn['Field'];
+			}
 		}
 		return $fields;
 	}
