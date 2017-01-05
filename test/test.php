@@ -39,7 +39,7 @@ $synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
 $synka->table("strategies","id")->insertUnique();
 
 
-$synka->table("dividends")->insertCompare("time1",">");
+$synka->table("dividends")->insertCompare("time1",">","tickerId");
 
 
 

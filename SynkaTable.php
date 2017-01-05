@@ -41,7 +41,16 @@ class SynkaTable {
 		$this->syncs['insertUnique']=true;
 	}
 	
-	public function insertCompare($compareField,$compareOperator) {
-		$this->syncs['insertCompare']=['compareField'=>$compareField,'compareOperator'=>$compareOperator];
+	/**Adds a row-insertion-sync to the table which identifies the rows that should be copied by comparing the field
+	 * specified as $compareField between the two databases, any rows that have a value of that field higher than the
+	 * max of the other, or lower than the minimum of the other depending on $compareOperator are going to be copied.
+	 * If $subsetField is set then only rows with higher/lower values of $compareField within the same value of
+	 * $subsetField are going to be copied.
+	 * @param string $compareField The field to do the comparison on
+	 * @param string $compareOperator Eiher "<" for copying rows that are of lower values, or ">" for higher
+	 * @param string $subsetField If this is set then the comparisons are done on a per subset basis, grouped by
+	 *		the specified field. If null then only one comparison is done, on the whole table.*/
+	public function insertCompare($compareField,$compareOperator,$subsetField=null) {
+		$this->syncs['insertCompare']=get_defined_vars();
 	}
 }

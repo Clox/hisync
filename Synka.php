@@ -72,8 +72,9 @@ class Synka {
 			.$exceptColumns
 			)->fetchAll(PDO::FETCH_GROUP|PDO::FETCH_UNIQUE|PDO::FETCH_ASSOC);
 		$table=$this->tables[]=new SynkaTable($tableName,$mirrorField,$columns,$linkedTables);
+		$syncDataTableSide=['translateIds'=>[],'pkTranslation'=>[]];
 		$this->syncData[$tableName]=['name'=>$tableName,'mirrorField'=>$mirrorField,'pkField'=>$table->pk,
-			'local'=>['translateIds'=>[]],'remote'=>['translateIds'=>[]]];
+			'local'=>$syncDataTableSide,'remote'=>$syncDataTableSide];
 		foreach ($linkedTables as $referencedTable=>$link) {
 			if ($this->syncData[$referencedTable]['mirrorField']!==$this->syncData[$referencedTable]['pkField'])
 				$this->syncData[$tableName]['fks'][$link['COLUMN_NAME']]=$referencedTable;
@@ -108,20 +109,57 @@ class Synka {
 		}
 	}
 	
-	protected function insertCompare($table,$compareField,$compareOperator) {
+	protected function insertCompare($table,$compareField,$compareOperator,$subsetField) {
 		foreach ($this->dbs as $thisDbKey=>$thisDb) {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
 			$tableFields=$this->getFieldsToSelect($table,$thisDbKey);
 			$tableFields_impl=$this->implodeTableFields($tableFields);
-			$thisExtremeValue=$thisDb->query("SELECT MAX(`$compareField`) FROM `$table->tableName`")
+			
+			if (!$subsetField) {
+				$extreme=$thisDb->query("SELECT MAX(`$compareField`) FROM `$table->tableName`")
 					->fetch(PDO::FETCH_COLUMN);
-			$query="SELECT $tableFields_impl".PHP_EOL
-				."FROM `$table->tableName`";
-			if ($thisExtremeValue) {
-				$query.=PHP_EOL."WHERE `$compareField`$compareOperator?";
+				$query="SELECT $tableFields_impl".PHP_EOL
+					."FROM `$table->tableName`";
+				if ($extreme) {
+					$query.=PHP_EOL."WHERE `$compareField`$compareOperator?";
+				}
+				$prepSelectMissingRows=$otherDb->prepare($query);
+				$prepSelectMissingRows->execute([$extreme]);
+			} else {
+				$extremes=$thisDb->query($query=
+					"SELECT o.`$subsetField` sub,o.`$compareField` comp FROM `$table->tableName` o".PHP_EOL
+					."LEFT JOIN `$table->tableName` b ON o.`$subsetField` = b.`$subsetField` "
+					. "AND o.`$compareField`$compareOperator b.`$compareField`".PHP_EOL
+					."WHERE b.`$compareField` is NULL")
+					->fetchAll(PDO::FETCH_ASSOC);
+				
+				//if $subsetField is a FK, pointing to a table where the PK is not also a mirrorField then the
+				//$subsetField's of $extremes will have to be translated here already
+				$linkedTableName=self::getRowByColumn($subsetField,"COLUMN_NAME",$table->linkedTables);
+				if ($linkedTableName) {
+					$linkedTable=&$this->syncData[$linkedTableName];
+					if ($linkedTable['pkField']!==$linkedTable['mirrorField']) {
+						$linkedTable[$thisDbKey]['translateIds']+=array_fill_keys(array_column($extremes,"sub"), true);
+						$linkedTable[$thisDbKey]['pkTranslation']+=$this->translatePkViaMirror($thisDb,$otherDb
+								, $linkedTable, array_keys($linkedTable[$thisDbKey]['translateIds']), true);
+						$linkedTable[$thisDbKey]['translateIds']=[];
+						foreach ($extremes as $extreme) {
+							if (key_exists($extreme['sub'], $linkedTable[$thisDbKey]['pkTranslation'])) {
+								$translatedExtremes[]=$linkedTable[$thisDbKey]['pkTranslation'][$extreme['sub']];
+								$translatedExtremes[]=$extreme['comp'];
+							}
+						}
+					}
+					unset ($linkedTable);
+				}
+				
+				$query="SELECT $tableFields_impl FROM `$table->tableName` WHERE `$compareField`$compareOperator".PHP_EOL
+					."CASE `$subsetField`".PHP_EOL;
+				$query.=str_repeat("	WHEN ? THEN ?\n", count($translatedExtremes)/2);
+				$query.="	ELSE '".($compareOperator=="<"?"18446744073709551615":"-9223372036854775808")."'\nEND";
+				$prepSelectMissingRows=$otherDb->prepare($query);
+				$prepSelectMissingRows->execute($translatedExtremes);
 			}
-			$prepSelectMissingRows=$otherDb->prepare($query);
-			$prepSelectMissingRows->execute([$thisExtremeValue]);
 			$thisMissingRows=$prepSelectMissingRows->fetchAll(PDO::FETCH_NUM);
 			if (!empty($thisMissingRows)) {
 				$this->addSyncData($table,$tableFields,$thisDbKey,"insertRows",$thisMissingRows);
@@ -139,7 +177,7 @@ class Synka {
 				$this->insertUnique($table);
 			} else if (key_exists('insertCompare', $syncs)) {
 				$sync=$syncs['insertCompare'];
-				$this->insertCompare($table,$sync['compareField'],$sync['compareOperator']);
+				$this->insertCompare($table,$sync['compareField'],$sync['compareOperator'],$sync['subsetField']);
 			}
 		}
 		return $this->syncData;
@@ -154,9 +192,11 @@ class Synka {
 				if (isset($syncTable[$thisDbKey]['insertRows'])) {
 					$firstInsertedRowId=$this->insertRows($syncTable, $thisDbKey,$thisDb);
 				}
-				if (!empty($syncTable[$thisDbKey]['translateIds'])) {
-					$pkTranslation=[];
-					$translationsToProcess=$syncTable[$thisDbKey]['translateIds'];
+				$translationsToProcess=array_diff_key($syncTable[$thisDbKey]['translateIds']
+					,array_flip($syncTable[$thisDbKey]['pkTranslation']));
+				if (!empty($translationsToProcess)) {
+					$pkTranslation=&$this->syncData[$syncTableName][$thisDbKey]['pkTranslation'];
+					
 					if (!empty($syncTable[$thisDbKey]['translateInsertionIds'])) {
 						foreach ($syncTable[$thisDbKey]['translateInsertionIds'] as $offset=>$oldId) {
 							$pkTranslation[$oldId]=$firstInsertedRowId+$offset;
@@ -168,7 +208,7 @@ class Synka {
 						$pkTranslation+=$this->translatePkViaMirror
 							($otherDb,$thisDb,$syncTable,array_keys($translationsToProcess));
 					}
-					$this->syncData[$syncTableName][$thisDbKey]['pkTranslation']=$pkTranslation;
+					unset ($pkTranslation);
 					//translateIds is an associative array of all ids we need translated as keys, and simply
 					//true as the values
 					//translateInsertionIds is an indexed array where index is the offset in the rows of the just
@@ -185,7 +225,7 @@ class Synka {
 	 * @param type $syncTable
 	 * @param type $fromIds
 	 */
-	protected function translatePkViaMirror($fromDb, $toDb, $syncTable, $fromIds) {
+	protected function translatePkViaMirror($fromDb, $toDb, $syncTable, $fromIds, $comparing=false) {
 		sort ($fromIds);
 		$placeholders='?'.str_repeat(',?', count($fromIds)-1);
 		$prepSelectMirrorValues=$fromDb->prepare($query=
@@ -193,14 +233,27 @@ class Synka {
 			."WHERE `$syncTable[pkField]` IN ($placeholders) ORDER BY `$syncTable[pkField]`");
 		$prepSelectMirrorValues->execute($fromIds);
 		$mirrorValues=$prepSelectMirrorValues->fetchAll(PDO::FETCH_COLUMN);
-		$oldPkToMirror=array_combine($fromIds,$mirrorValues);
-		asort($oldPkToMirror);
-		$prepSelectNewIds=$toDb->prepare(
-			"SELECT `$syncTable[pkField]` FROM `$syncTable[name]`".PHP_EOL
-			."WHERE `$syncTable[mirrorField]` IN ($placeholders) ORDER BY `$syncTable[mirrorField]`");
-		$prepSelectNewIds->execute($mirrorValues);
-		$newIds=$prepSelectNewIds->fetchAll(PDO::FETCH_COLUMN);
-		return array_combine(array_keys($oldPkToMirror), $newIds);
+		if (!$comparing) {
+			$oldPkToMirror=array_combine($fromIds,$mirrorValues);
+			asort($oldPkToMirror);
+			$prepSelectNewIds=$toDb->prepare(
+				"SELECT `$syncTable[pkField]` FROM `$syncTable[name]`".PHP_EOL
+				."WHERE `$syncTable[mirrorField]` IN ($placeholders) ORDER BY `$syncTable[mirrorField]`");
+			$prepSelectNewIds->execute($mirrorValues);
+			$newIds=$prepSelectNewIds->fetchAll(PDO::FETCH_COLUMN);
+			return array_combine(array_keys($oldPkToMirror), $newIds);
+		} else {
+			$mirrorToOldPk=array_combine($mirrorValues,$fromIds);
+			$prepSelectNewIds=$toDb->prepare(
+				"SELECT `$syncTable[pkField]`,`$syncTable[mirrorField]` FROM `$syncTable[name]`".PHP_EOL
+				."WHERE `$syncTable[mirrorField]` IN ($placeholders) ORDER BY `$syncTable[mirrorField]`");
+			$prepSelectNewIds->execute($mirrorValues);
+			$newIdToMirror=$prepSelectNewIds->fetchAll(PDO::FETCH_KEY_PAIR);
+			foreach ($newIdToMirror as $newId=>$mirror) {
+				$result[$mirrorToOldPk[$mirror]]=$newId;
+			}
+			return $result;
+		}
 	}
 	
 	/**
@@ -245,6 +298,15 @@ class Synka {
 			unset ($array[$rowIndex][$index]);
 		}
 		return $values;
+	}
+	
+	static function getRowByColumn($needle,$column,$haystack) {
+		foreach ($haystack as $rowIndex=>$row) {
+			if (key_exists($column, $row)&&$row[$column]===$needle) {
+				return $rowIndex;
+			}
+		}
+		return falsE;
 	}
 	
 	/**
