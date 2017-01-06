@@ -126,37 +126,43 @@ class Synka {
 				$prepSelectMissingRows=$otherDb->prepare($query);
 				$prepSelectMissingRows->execute([$extreme]);
 			} else {
+				$translatedExtremes=[];
 				$extremes=$thisDb->query($query=
 					"SELECT o.`$subsetField` sub,o.`$compareField` comp FROM `$table->tableName` o".PHP_EOL
 					."LEFT JOIN `$table->tableName` b ON o.`$subsetField` = b.`$subsetField` "
 					. "AND o.`$compareField`$compareOperator b.`$compareField`".PHP_EOL
 					."WHERE b.`$compareField` is NULL")
 					->fetchAll(PDO::FETCH_ASSOC);
-				
-				//if $subsetField is a FK, pointing to a table where the PK is not also a mirrorField then the
-				//$subsetField's of $extremes will have to be translated here already
-				$linkedTableName=self::getRowByColumn($subsetField,"COLUMN_NAME",$table->linkedTables);
-				if ($linkedTableName) {
-					$linkedTable=&$this->syncData[$linkedTableName];
-					if ($linkedTable['pkField']!==$linkedTable['mirrorField']) {
-						$linkedTable[$thisDbKey]['translateIds']+=array_fill_keys(array_column($extremes,"sub"), true);
-						$linkedTable[$thisDbKey]['pkTranslation']+=$this->translatePkViaMirror($thisDb,$otherDb
-								, $linkedTable, array_keys($linkedTable[$thisDbKey]['translateIds']), true);
-						$linkedTable[$thisDbKey]['translateIds']=[];
-						foreach ($extremes as $extreme) {
-							if (key_exists($extreme['sub'], $linkedTable[$thisDbKey]['pkTranslation'])) {
-								$translatedExtremes[]=$linkedTable[$thisDbKey]['pkTranslation'][$extreme['sub']];
-								$translatedExtremes[]=$extreme['comp'];
+				$query="SELECT $tableFields_impl FROM `$table->tableName`";
+				if (!empty($extremes)) {
+					//if $subsetField is a FK, pointing to a table where the PK is not also a mirrorField then the
+					//$subsetField's of $extremes will have to be translated here already
+					$linkedTableName=self::getRowByColumn($subsetField,"COLUMN_NAME",$table->linkedTables);
+					if ($linkedTableName) {
+						$linkedTable=&$this->syncData[$linkedTableName];
+						if ($linkedTable['pkField']!==$linkedTable['mirrorField']) {
+							$idsToTranslate=array_diff($linkedTable[$thisDbKey]['translateIds']
+								+array_column($extremes,"sub"),array_keys($linkedTable[$thisDbKey]));
+							if (!empty($idsToTranslate)) {
+								$linkedTable[$thisDbKey]['pkTranslation']+=$this->translatePkViaMirror($thisDb,$otherDb
+									, $linkedTable, $idsToTranslate, true);
+								$linkedTable[$thisDbKey]['translateIds']=[];
+							}
+							foreach ($extremes as $extreme) {
+								if (key_exists($extreme['sub'], $linkedTable[$thisDbKey]['pkTranslation'])) {
+									$translatedExtremes[]=$linkedTable[$thisDbKey]['pkTranslation'][$extreme['sub']];
+									$translatedExtremes[]=$extreme['comp'];
+								}
 							}
 						}
+						unset ($linkedTable);
 					}
-					unset ($linkedTable);
+
+					$query.=" WHERE `$compareField`$compareOperator".PHP_EOL
+						."CASE `$subsetField`".PHP_EOL;
+					$query.=str_repeat("	WHEN ? THEN ?\n", count($translatedExtremes)/2);
+					$query.="	ELSE '".($compareOperator=="<"?"18446744073709551615":"-9223372036854775808")."'\nEND";
 				}
-				
-				$query="SELECT $tableFields_impl FROM `$table->tableName` WHERE `$compareField`$compareOperator".PHP_EOL
-					."CASE `$subsetField`".PHP_EOL;
-				$query.=str_repeat("	WHEN ? THEN ?\n", count($translatedExtremes)/2);
-				$query.="	ELSE '".($compareOperator=="<"?"18446744073709551615":"-9223372036854775808")."'\nEND";
 				$prepSelectMissingRows=$otherDb->prepare($query);
 				$prepSelectMissingRows->execute($translatedExtremes);
 			}

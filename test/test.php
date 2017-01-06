@@ -14,33 +14,20 @@ $local=new PDO('mysql:host=localhost:3306;dbname=fundtracker;charset=utf8', 'fun
 $local->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $remote=new PDO('mysql:host=localhost:3306;dbname=fundtrackertest;charset=utf8', 'fundtracker', 'blomma22');
 $remote->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
 $synka=new Synka($local,$remote);
-
-//needed because otherwise there will be an error when trying to access portfolios in syncData to place
-//translateId's in it, but that's the only reason
 $synka->table("portfolios","id");
-
 $synka->table("funds","id")->insertCompare("id",">");
-
-//since the funds-table was added with "id" as mirrorField, the below method will know that the FK values in
-//fundratings that are pointing to funds are same on both sides and can just copy them directly rather than having to 
-//link old ids to new ids
 $synka->table("fundratings","id")->insertCompare("id",">");
-
 $synka->table("portfolio_snapshots","id")->insertCompare("id",">");
 $synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">");
-
 $synka->table("exchanges","exchangeName")->insertUnique();
 $synka->table("tickers","tickerSymbol")->insertUnique();
 $synka->table("securities","id")->insertCompare("id",">");
 $synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
-
-
 $synka->table("strategies","id")->insertUnique();
-
-
 $synka->table("dividends")->insertCompare("time1",">","tickerId");
-
+$synka->table("splits")->insertCompare("time1",">","tickerId");
 
 
 //Finally process all of the added tableSyncs.
@@ -73,7 +60,7 @@ exit;
 
 
 $synka->syncInsertCompare("quotes","date",">","tickerId");
-$synka->syncInsertCompare("splits","time1",">","tickerId");
+
 $synka->syncUpdateInsert("tickers_in_strategies",["strategyId","tickerId"],"updatedAt",["included"]);
 $synka->syncUpdate("securities","id","updatedAt",["tickerId","notes","ignored"]);
 
