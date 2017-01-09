@@ -12,6 +12,9 @@ class SynkaTable {
 	public $syncs=[];
 	public $pk;
 	public $translateIds;
+	public $syncData;
+	public $fks=[];
+	public $idForSelect;
 	
 	/**List of tables that this table links to through foreign keys, if any.
 	 * Key is the name of the referenced table, value is:
@@ -27,10 +30,10 @@ class SynkaTable {
 		foreach ($columns as $column) {
 			if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
 				$this->pk=$column['Field'];
-				break;
 			}
 		}
 		$this->linkedTables=$linkedTables;
+		$this->syncData=  array_fill_keys(["local","remote"], ['pkTranslation'=>[],'translateIds'=>[]]);
 	}
 	
 	public function insertUnique() {
