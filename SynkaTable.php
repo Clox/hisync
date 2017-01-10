@@ -15,6 +15,7 @@ class SynkaTable {
 	public $syncData;
 	public $fks=[];
 	public $idForSelect;
+	public $updateOnDupeKey;
 	
 	/**List of tables that this table links to through foreign keys, if any.
 	 * Key is the name of the referenced table, value is:
@@ -53,7 +54,7 @@ class SynkaTable {
 	 * @param string $compareOperator Eiher "<" for copying rows that are of lower values, or ">" for higher
 	 * @param string $subsetField If this is set then the comparisons are done on a per subset basis, grouped by
 	 *		the specified field. If null then only one comparison is done, on the whole table.*/
-	public function insertCompare($compareField,$compareOperator,$subsetField=null) {
+	public function insertCompare($compareField,$compareOperator,$subsetField=null,$updateOnDupeKey=false) {
 		$this->syncs['insertCompare']=get_defined_vars();
 	}
 }

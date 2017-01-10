@@ -31,6 +31,7 @@ $synka->table("strategies","id")->insertUnique();
 $synka->table("dividends")->insertCompare("time1",">","tickerId");
 $synka->table("splits")->insertCompare("time1",">","tickerId");
 $synka->table("quotes")->insertCompare("date",">","tickerId");
+$synka->table("tickers_in_strategies")->insertCompare("updatedAt",">","strategyId",true);
 
 
 //Finally process all of the added tableSyncs.
@@ -64,7 +65,7 @@ exit;
 
 
 
-$synka->syncUpdateInsert("tickers_in_strategies",["strategyId","tickerId"],"updatedAt",["included"]);
+
 $synka->syncUpdate("securities","id","updatedAt",["tickerId","notes","ignored"]);
 
 
