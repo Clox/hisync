@@ -124,7 +124,7 @@ class Synka {
 				$extremes=$thisDb->query($query=
 					"SELECT o.`$subsetField` sub,o.`$compareField` comp FROM `$table->tableName` o".PHP_EOL
 					."LEFT JOIN `$table->tableName` b ON o.`$subsetField` = b.`$subsetField` "
-					. "AND o.`$compareField`$compareOperator b.`$compareField`".PHP_EOL
+					. "AND b.`$compareField`$compareOperator o.`$compareField`".PHP_EOL
 					."WHERE b.`$compareField` is NULL")
 					->fetchAll(PDO::FETCH_ASSOC);
 				$query="SELECT $tableFields_impl FROM `$table->tableName`";
