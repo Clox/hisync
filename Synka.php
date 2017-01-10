@@ -50,7 +50,7 @@ class Synka {
 			$exceptColumns=PHP_EOL."AND COLUMN_NAME NOT IN ($ignoredColumns_impl)";
 		}
 		$columns=$this->dbs['local']->query(//get all columns of this table except manually ignored ones
-			"SELECT COLUMN_NAME Field,COLUMN_KEY 'Key',EXTRA Extra".PHP_EOL
+			"SELECT COLUMN_NAME Field,COLUMN_KEY 'Key',EXTRA Extra,DATA_TYPE".PHP_EOL
 			."FROM INFORMATION_SCHEMA.COLUMNS".PHP_EOL
 			."WHERE TABLE_SCHEMA=DATABASE()".PHP_EOL
 			."AND TABLE_NAME='$tableName'"
@@ -303,11 +303,22 @@ class Synka {
 			}
 		}
 		$db->beginTransaction();
+		$onDuplicate="";
+		if ($table->updateOnDupeKey) {
+			$onDuplicate=PHP_EOL."ON DUPLICATE KEY UPDATE".PHP_EOL;
+			foreach ($table->columns as $columnIndex=>$column) {
+				if ($columnIndex) {
+					$onDuplicate.=",";
+				}
+				$onDuplicate.="`$column[Field]`=VALUES(`$column[Field]`)";
+			}
+		}
 		while ($rowsPortion=array_splice($rows,0,10000)) {	
 			$rowsPlaceholders="($colsPlaceholders)".str_repeat(",($colsPlaceholders)", count($rowsPortion)-1);
 			$prepRowInsert=$db->prepare(
 				"INSERT INTO `$table->tableName` ($cols_impl)".PHP_EOL
 				."VALUES $rowsPlaceholders"
+				.$onDuplicate
 			);
 			$values=call_user_func_array('array_merge', $rowsPortion);
 			$prepRowInsert->execute($values);
@@ -343,6 +354,15 @@ class Synka {
 	 * @param type $rows
 	 */
 	protected function addSyncData($table,$dbKey,$type,$rows,$updateOnDupeKey=false) {
+		foreach ($table->columns as $columnIndex=>$column) {
+			//need to turn "1" and "0" into true and false respectively.
+			//both values would otherwise always evaluate to true when doing prepared
+			if ($column['DATA_TYPE']==="bit") {
+				foreach ($rows as $rowIndex=>$row) {
+					$rows[$rowIndex][$columnIndex]=$row[$columnIndex]==="1";
+				}
+			}
+		}
 		if ($table->idForSelect) {
 			//if this table has no ids that need to be translated then we can remove the pk column from columns and
 			//rows. 
@@ -351,7 +371,7 @@ class Synka {
 			$table->syncData[$dbKey]['translateInsertionIds']=self::unsetColumn2dArray($rows,$pkIndex);
 		}
 			
-		$table->syncData[$dbKey]['columns']=$table->syncData['columns'];
+		$table->syncData[$dbKey]['columns']=$table->syncData['columns'];//DELETE THIS?
 		$table->syncData[$dbKey][$type]=$rows;
 		$table->updateOnDupeKey=$updateOnDupeKey;
 		
