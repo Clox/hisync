@@ -16,6 +16,7 @@ class SynkaTable {
 	public $fks=[];
 	public $idForSelect;
 	public $updateOnDupeKey;
+	public $updateCols;
 	
 	/**List of tables that this table links to through foreign keys, if any.
 	 * Key is the name of the referenced table, value is:
@@ -43,6 +44,7 @@ class SynkaTable {
 						. "specified mirrorField(specify it in in the Synka->table() method)");
 		}
 		$this->syncs['insertUnique']=true;
+		return $this;
 	}
 	
 	/**Adds a row-insertion-sync to the table which identifies the rows that should be copied by comparing the field
@@ -55,6 +57,29 @@ class SynkaTable {
 	 * @param string $subsetField If this is set then the comparisons are done on a per subset basis, grouped by
 	 *		the specified field. If null then only one comparison is done, on the whole table.*/
 	public function insertCompare($compareField,$compareOperator,$subsetField=null,$updateOnDupeKey=false) {
-		$this->syncs['insertCompare']=get_defined_vars();
+		$this->updateOnDupeKey=$updateOnDupeKey;
+		$this->syncs['insertCompare']=compact("compareField","compareOperator","subsetField");
+		return $this;
+	}
+	
+	/**Tells Synka to do row-updating on the referenced table. The table must have a PK-column for it to work.
+	 * It works similarely to insertCompare in that it needs a field to do comparison on, to identify which side
+	 * the row is most up to date on and should be copied from.
+	 * Common usage would be something like update("updatedAt",">",["foo"]) given that the table has an
+	 * "updatedAt"-field which gets set to current timestamp when the "foo"-field is updated. It is also important
+	 * that the "updatedAt"-field cannot be null or otherwise the comparison wont work correctly.
+	 * @param string $compareField A field-name to do comparison on. Typically "updatedAt"
+	 * @param string $compareOperator Either "<" for replacing the row with the higher value of "$compareField" or ">"
+	 *									for the opposite which would be the most common one.
+	 * @param string[] $updateFields A list of columns that should be updated.
+	 * @return \SynkaTable*/
+	public function update($compareField,$compareOperator,$updateFields) {
+		$updateFields[]=$this->pk;
+		if (!in_array($compareField, $updateFields)) {
+			$updateFields[]=$compareField;
+		}
+		$this->updateCols=$updateFields;
+		$this->syncs['update']=compact("compareField","compareOperator");
+		return $this;
 	}
 }
