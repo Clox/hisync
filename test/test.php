@@ -8,7 +8,7 @@
 
 //how it should be able to be used
 
-require_once '../Synka.php';
+require_once './SynkaTester.php';
 
 $local=new PDO('mysql:host=localhost:3306;dbname=fundtracker;charset=utf8', 'fundtracker', 'blomma22');
 $local->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -17,20 +17,28 @@ $local->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $remote=new PDO('mysql:host=localhost:3306;dbname=fundtrackertest;charset=utf8', 'fundtracker', 'blomma22');
 $remote->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-$synka=new Synka($local,$remote);
+$synka=new SynkaTester($local,$remote);
+
 $synka->table("portfolios","id");
-$synka->table("funds","id")->insertCompare("id",">");
-$synka->table("fundratings","id")->insertCompare("id",">");
-$synka->table("portfolio_snapshots","id")->insertCompare("id",">");
-$synka->table("portfolio_snapshots_in_portfolios","id")->insertCompare("id",">");
-$synka->table("exchanges","exchangeName")->insertUnique();
-$synka->table("tickers","tickerSymbol")->insertUnique();
-$synka->table("securities","id")->insertCompare("id",">")->update("updatedAt",">",["tickerId","notes","ignored"]);
-$synka->table("portfoliorows")->insertCompare("portfolioSnapshotId",">");
-$synka->table("strategies","id")->insertUnique();
-$synka->table("dividends")->insertCompare("time1",">","tickerId");
-$synka->table("splits")->insertCompare("time1",">","tickerId");
-$synka->table("quotes")->insertCompare("date",">","tickerId");
-$synka->table("tickers_in_strategies")->insertCompare("updatedAt",">","strategyId",true);
-$syncData=$synka->compare();//optional, if not called explicitly then Synka->sync() will call it
-$synka->sync();
+$synka->table("funds","id")->sync("*","id",">");
+$synka->table("fundratings","id")->sync("*","id",">");
+$synka->table("portfolio_snapshots","id")->sync("*","id",">");
+$synka->table("portfolio_snapshots_in_portfolios","id")->sync("*","id",">");
+$synka->table("exchanges","exchangeName")->sync("*","exchangeName","!=");
+$synka->table("tickers","tickerSymbol")->sync("*","tickerSymbol","!=");
+$synka->table("securities","id")->sync("*","id",">")->sync(["notes","ignored"],"updatedAt",">","id");
+/*
+$synka->table("portfoliorows")->sync("*","portfolioSnapshotId",">");
+$synka->table("strategies","id")->sync("*","id","!=")->sync("*","updatedOn",">","id");
+$synka->table("dividends")->sync("*","time1",">","tickerId");
+$synka->table("splits")->sync("*","time1",">","tickerId");
+$synka->table("quotes")->sync("*","date",">","tickerId");
+$synka->table("tickers_in_strategies")
+		->sync("*",["strategyId","tickerId"],"!=")->sync(["included"],"updatedAt",">",["strategyId","tickerId"]);
+//$synka->table("tickers_in_strategies")->sync("*",["strategyId","tickerId"],"!=")->update(["included"],"updatedAt");
+*/
+$syncData=$synka->analyze();//optional, if not called explicitly then Synka->sync() will call it
+
+//$synka->sync();
+
+//echo $synka->checkForDiscrepancies()?"match":"mismatch";

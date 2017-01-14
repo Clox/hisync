@@ -5,18 +5,24 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
+require_once 'SynkaTableSync.php';
+require_once 'SynkaTableColumn.php';
 class SynkaTable {
 	public $tableName;
-	public $mirrorField;
+	
+	/**Array of columns where key is column-name
+	 * @var SynkaTableColumn */
 	public $columns;
+	
+	/**List of syncs that should be done on this table. Added via SynkaTable->addSync()
+	 * @var SynkaTableSync[] */
 	public $syncs=[];
+	
 	public $pk;
 	public $translateIds;
-	public $syncData;
-	public $fks=[];
-	public $idForSelect;
 	public $updateOnDupeKey;
 	public $updateCols;
+	public $translateIdFrom=['local'=>[],'remote'=>[]];
 	
 	/**List of tables that this table links to through foreign keys, if any.
 	 * Key is the name of the referenced table, value is:
@@ -27,15 +33,15 @@ class SynkaTable {
 	
 	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
-		$this->mirrorField=$mirrorField;
-		$this->columns=$columns;
 		foreach ($columns as $column) {
-			if ($column['Key']==='PRI'&&$column['Extra']==='auto_increment') {
-				$this->pk=$column['Field'];
+			if ($column['key']==='PRI') {
+				$this->pk=$column['name'];
 			}
+			$isMirror=$mirrorField===$column['name'];
+			$this->columns[$column['name']]
+				=new SynkaTableColumn($column['name'],$column['type'],$column['key'],$column['extra'],$isMirror);
 		}
 		$this->linkedTables=$linkedTables;
-		$this->syncData=  array_fill_keys(["local","remote"], ['pkTranslation'=>[],'translateIds'=>[]]);
 	}
 	
 	public function insertUnique() {
@@ -45,6 +51,56 @@ class SynkaTable {
 		}
 		$this->syncs['insertUnique']=true;
 		return $this;
+	}
+	
+	/**Adds a sync to the table which will be processed when calling Synka->compare() and Synka->
+	 * @param array|string $fields Specifies which fields to be copied. Can be "*" for all fields, or an array of
+	 *		field-name-strings. If the first element of the array is "*-" then it means all fields except the ones
+	 *		specified in the rest of the elements will be copied.
+	 *		The field specified as $compareField will always be included no matter what.
+	 * @param string $compareField The field that comparison will be done on, to identify what rows should be copied.
+	 *		Might for instance be "updatedAt" with $compareOperator as ">", or "userName" with $compareOperator as "!=".
+	 * @param string $compareOperator "<"|">"|"!="<ul>
+	 *		<li>"<" is for copying rows from the source DB with values of $compareField lower than the minimum of the
+	 *		target DB.</li>
+	 *		<li>">" is the reverse of "<". Commonly used while $compareField is something like addedAt or updatedAt
+	 *			for copying new updates</li>
+	 *		<li>"!=" is for finding unique values of $compareField. An example of it would be to use it while
+	 *			$compareField is i.e. "userName" which should be a unique field.</li></ul>
+	 * @param string $subsetField An optional string of a field which groups together rows with the same value of it
+	 *		to use the $compareField and $compareOperator within each group rather than globally.
+	 * @return SynkaTable Returns the table-object to enable adding multiple syncs in a chain.*/
+	public function sync($fields,$compareField,$compareOperator,$subsetField=null) {
+		if ($fields[0]==="*-") {
+			$fields=array_intersect(array_keys($this->columns));
+		} else if ($fields==="*") {
+			$fields=array_keys($this->columns);
+			if ($this->pk&&$this->columns[$this->pk]->extra==="auto_increment"&&!$this->columns[$this->pk]->mirror) {
+				array_splice($fields, array_search($this->pk, $fields),1);
+			}
+		}
+		if (!in_array($compareField, $fields)) {
+			$fields[]=$compareField;
+		}
+		if ($subsetField&&!in_array($subsetField,$fields)) {
+			$fields[]=$subsetField;
+		}
+		$this->syncs[]=new SynkaTableSync($this,$fields, $compareField, $compareOperator, $subsetField);
+		return $this;
+	}
+	
+	public function syncCompare($fields,$compareField,$compareOperator=">") {
+		if ($fields[0]==="*-") {
+			$fields=array_intersect(array_keys($this->columns));
+		} else if ($fields==="*") {
+			$fields=array_keys($this->columns);
+		}
+		$type='compare';
+		$this->syncs[]=compact('type','fields','compareField','compareOperator');
+	}
+	
+	public function syncUnique() {
+		
 	}
 	
 	/**Adds a row-insertion-sync to the table which identifies the rows that should be copied by comparing the field
@@ -81,5 +137,14 @@ class SynkaTable {
 		$this->updateCols=$updateFields;
 		$this->syncs['update']=compact("compareField","compareOperator");
 		return $this;
+	}
+	
+	/**
+	 * 
+	 * @param type $side
+	 * @param type $ids
+	 */
+	public function addIdsToTranslate($side,$ids) {
+		$this->translateIdFrom[$side]+=array_fill_keys($ids, null);
 	}
 }
