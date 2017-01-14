@@ -19,7 +19,6 @@ class SynkaTable {
 	public $syncs=[];
 	
 	public $pk;
-	public $translateIds;
 	public $updateOnDupeKey;
 	public $updateCols;
 	public $translateIdFrom=['local'=>[],'remote'=>[]];
@@ -31,15 +30,17 @@ class SynkaTable {
 	 * @var string[]*/
 	public $linkedTables;
 	
+	public $mirrorField;
+	
 	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
+		$this->mirrorField=$mirrorField;
 		foreach ($columns as $column) {
 			if ($column['key']==='PRI') {
 				$this->pk=$column['name'];
 			}
-			$isMirror=$mirrorField===$column['name'];
-			$this->columns[$column['name']]
-				=new SynkaTableColumn($column['name'],$column['type'],$column['key'],$column['extra'],$isMirror);
+			$this->columns[$column['name']]=new SynkaTableColumn
+					($column['name'],$column['type'],$column['key'],$column['extra'],$mirrorField===$column['name']);
 		}
 		$this->linkedTables=$linkedTables;
 	}
@@ -58,8 +59,9 @@ class SynkaTable {
 	 *		field-name-strings. If the first element of the array is "*-" then it means all fields except the ones
 	 *		specified in the rest of the elements will be copied.
 	 *		The field specified as $compareField will always be included no matter what.
-	 * @param string $compareField The field that comparison will be done on, to identify what rows should be copied.
-	 *		Might for instance be "updatedAt" with $compareOperator as ">", or "userName" with $compareOperator as "!=".
+	 * @param string|array $compareField The field that comparison will be done on, to identify what rows should be
+	 *		copied. Might for instance be "updatedAt" with $compareOperator as ">", or "userName" with
+	 *		$compareOperator as "!=". It can also be an array of multiple field-strings is $compareOperator is "!="
 	 * @param string $compareOperator "<"|">"|"!="<ul>
 	 *		<li>"<" is for copying rows from the source DB with values of $compareField lower than the minimum of the
 	 *		target DB.</li>
@@ -67,23 +69,35 @@ class SynkaTable {
 	 *			for copying new updates</li>
 	 *		<li>"!=" is for finding unique values of $compareField. An example of it would be to use it while
 	 *			$compareField is i.e. "userName" which should be a unique field.</li></ul>
-	 * @param string $subsetField An optional string of a field which groups together rows with the same value of it
+	 * @param string|array $subsetField An optional string of a field which groups together rows with the same value of it
 	 *		to use the $compareField and $compareOperator within each group rather than globally.
 	 * @return SynkaTable Returns the table-object to enable adding multiple syncs in a chain.*/
 	public function sync($fields,$compareField,$compareOperator,$subsetField=null) {
+		if (is_string($compareField)) {
+			$compareField=[$compareField];
+		}
+		if (is_string($subsetField)) {
+			$subsetField=[$subsetField];
+		}
 		if ($fields[0]==="*-") {
-			$fields=array_intersect(array_keys($this->columns));
+			$fields=array_diff(array_keys($this->columns),$fields);
 		} else if ($fields==="*") {
 			$fields=array_keys($this->columns);
 			if ($this->pk&&$this->columns[$this->pk]->extra==="auto_increment"&&!$this->columns[$this->pk]->mirror) {
 				array_splice($fields, array_search($this->pk, $fields),1);
 			}
 		}
-		if (!in_array($compareField, $fields)) {
-			$fields[]=$compareField;
+		foreach ($compareField as $singleCompareField) {
+			if (!in_array($singleCompareField, $fields)) {
+				$fields[]=$compareField[0];
+			}
 		}
-		if ($subsetField&&!in_array($subsetField,$fields)) {
-			$fields[]=$subsetField;
+		if ($subsetField) {
+			foreach ($subsetField as $singleSubsetField) {
+				if (!in_array($singleSubsetField,$fields)) {
+					$fields[]=$singleSubsetField;
+				}
+			}
 		}
 		$this->syncs[]=new SynkaTableSync($this,$fields, $compareField, $compareOperator, $subsetField);
 		return $this;

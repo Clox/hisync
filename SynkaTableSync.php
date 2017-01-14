@@ -13,8 +13,8 @@ class SynkaTableSync {
 	public $syncData;
 	public $insertionIds;
 	
-	public $copyFields,$compareField,$compareOperator,$subsetField,$selectFields;
-	public function __construct($table,$copyFields,$compareField,$compareOperator,$subsetField) {
+	public $copyFields,$compareFields,$compareOperator,$subsetFields,$selectFields;
+	public function __construct($table,$copyFields,$compareFields,$compareOperator,$subsetFields) {
 		foreach (get_defined_vars() as $varName=>$val) {
 			$this->$varName=$val;
 		}

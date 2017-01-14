@@ -20,14 +20,13 @@ $remote->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $synka=new SynkaTester($local,$remote);
 
 $synka->table("portfolios","id");
-$synka->table("funds","id")->sync("*","id",">");
+$synka->table("funds","id")->sync(["*-","portfolioId"],"id",">");
 $synka->table("fundratings","id")->sync("*","id",">");
 $synka->table("portfolio_snapshots","id")->sync("*","id",">");
 $synka->table("portfolio_snapshots_in_portfolios","id")->sync("*","id",">");
 $synka->table("exchanges","exchangeName")->sync("*","exchangeName","!=");
 $synka->table("tickers","tickerSymbol")->sync("*","tickerSymbol","!=");
-$synka->table("securities","id")->sync("*","id",">")->sync(["notes","ignored"],"updatedAt",">","id");
-/*
+$synka->table("securities","id")->sync("*","id",">")->sync(["notes","ignored","tickerId"],"updatedAt",">","id");
 $synka->table("portfoliorows")->sync("*","portfolioSnapshotId",">");
 $synka->table("strategies","id")->sync("*","id","!=")->sync("*","updatedOn",">","id");
 $synka->table("dividends")->sync("*","time1",">","tickerId");
@@ -36,9 +35,9 @@ $synka->table("quotes")->sync("*","date",">","tickerId");
 $synka->table("tickers_in_strategies")
 		->sync("*",["strategyId","tickerId"],"!=")->sync(["included"],"updatedAt",">",["strategyId","tickerId"]);
 //$synka->table("tickers_in_strategies")->sync("*",["strategyId","tickerId"],"!=")->update(["included"],"updatedAt");
-*/
-$syncData=$synka->analyze();//optional, if not called explicitly then Synka->sync() will call it
 
+$syncData=$synka->analyze(false);//optional, if not called explicitly then Synka->sync() will call it
+exit;
 //$synka->sync();
 
 //echo $synka->checkForDiscrepancies()?"match":"mismatch";

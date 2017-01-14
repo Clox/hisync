@@ -69,6 +69,7 @@ class Synka {
 		$table=$this->tables[$tableName]=new SynkaTable($tableName,$mirrorField,$columns,$linkedTables);
 		foreach ($linkedTables as $referencedTableName=>$link) {
 			$referencedTable=$this->tables[$referencedTableName];
+			$table->columns[$link['colName']]->fk=$referencedTableName;
 			if ($referencedTable->columns[$link['referencedColName']]->mirror) {
 				$table->columns[$link['colName']]->mirror=true;
 			}
@@ -208,16 +209,28 @@ class Synka {
 		$this->analyzed&&trigger_error("analyze() (or commit()) has already been called, can't call again.");
 		$this->analyzed=true;
 		if ($lockTables) {
-			$tableNames=array_keys($this->tables);
-			$tableLockStatements="`".implode("` WRITE,`",$tableNames)."` WRITE";
+			$lockStmt="";
+			foreach ($this->tables as $tableName=>$table) {
+				if ($table->syncs) {
+					if ($lockStmt) {
+						$lockStmt.=',';
+					}
+					$lockStmt.="`$tableName` WRITE";
+					foreach ($table->syncs as $tableSync) {
+						if ($tableSync->subsetFields&&$tableSync->compareOperator!=="!=") {
+							$lockStmt.=",`$tableName` `{$tableName}2` READ";
+						}
+					}
+				}
+			}
 			foreach ($this->dbs as $db) {
-				$status=$db->exec("LOCK TABLES $tableLockStatements");
+				$db->exec("LOCK TABLES $lockStmt");
 			}
 		}
 		foreach ($this->tables as $table) {
 			$this->setTableSyncsSelectFields($table);
 			foreach ($table->syncs as $tableSync) {
-				switch ([!!$tableSync->subsetField,$tableSync->compareOperator==="!="]) {
+				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
 					case [true,true]:
 						$syncData=$this->analyzeTableSyncSubsetUnique($tableSync);
 					break;
@@ -245,13 +258,13 @@ class Synka {
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
 			$sourceDb=$this->dbs[$sourceSide];
-			$compareVal=$targetDb->query("SELECT MAX(`$tableSync->compareField`) FROM `$table->tableName`")
+			$compareVal=$targetDb->query("SELECT MAX(`{$tableSync->compareFields[0]}`) FROM `$table->tableName`")
 			->fetchAll(PDO::FETCH_COLUMN);
 			
 			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
 					."FROM `$table->tableName`";
 			if ($compareVal) {
-				$selectRowsQuery.=PHP_EOL."WHERE `$tableSync->compareField`$tableSync->compareOperator?";
+				$selectRowsQuery.=PHP_EOL."WHERE `{$tableSync->compareFields[0]}`$tableSync->compareOperator?";
 			}
 			$prepSelectRows=$sourceDb->prepare($selectRowsQuery);
 			$prepSelectRows->execute($compareVal);
@@ -269,16 +282,24 @@ class Synka {
 		$syncData=[];
 		$table=$tableSync->table;
 		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+		$singleCmp=!isset($tableSync->compareFields[1]);
+		$compareFields_impl=$this->implodeTableFields($tableSync->compareFields);
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
 			$sourceDb=$this->dbs[$sourceSide];
 			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
 				."FROM `$table->tableName`";
-			$notAmong=$targetDb->query("SELECT `$tableSync->compareField` FROM `$table->tableName`")
-				->fetchAll(PDO::FETCH_COLUMN);
+			$notAmong=$targetDb->query("SELECT $compareFields_impl FROM `$table->tableName`")
+				->fetchAll($singleCmp?PDO::FETCH_COLUMN:PDO::FETCH_NUM);
 			if ($notAmong) {
-				$placeHolders='?'.str_repeat(',?', count($notAmong)-1);
-				$selectRowsQuery.=PHP_EOL."WHERE `$tableSync->compareField` NOT IN ($placeHolders)";
+				if ($singleCmp) {
+					$placeHolders='?'.str_repeat(',?', count($notAmong)-1);
+				} else {
+					$fieldPlaceholders='?'.str_repeat(',?', count($tableSync->compareFields)-1);
+					$placeHolders="($fieldPlaceholders)".str_repeat(",($fieldPlaceholders)", count($notAmong)-1);
+					$notAmong=call_user_func_array('array_merge', $notAmong);
+				}
+				$selectRowsQuery.=PHP_EOL."WHERE ($compareFields_impl) NOT IN ($placeHolders)";
 			}
 			$prepSelectRows=$sourceDb->prepare($selectRowsQuery);
 			$prepSelectRows->execute($notAmong);
@@ -294,58 +315,56 @@ class Synka {
 	 * 
 	 * @param SynkaTableSync $tableSync*/
 	protected function analyzeTableSyncSubsetBeyond($tableSync) {
-		$table=$tableSync->table;
+		$result=[];
+		$compValsJoins=$compValsSelectSubsets=$compValsQuery="";
+		$tableName=$tableSync->table->tableName;
+		$compareField=$tableSync->compareFields[0];
+		foreach ($tableSync->subsetFields as $subsetField) {
+			$compValsJoins.="$tableName.`$subsetField`={$tableName}2.`$subsetField` AND ";
+			$compValsSelectSubsets.="`$tableName`.`$subsetField`,";
+		}
+		$compValsQuery="SELECT {$compValsSelectSubsets}`$tableName`.`$compareField` FROM `$tableName`".PHP_EOL
+				."LEFT JOIN `$tableName` {$tableName}2 ON $compValsJoins"
+				."{$tableName}2.`$compareField`$tableSync->compareOperator `$tableName`.`$compareField`".PHP_EOL
+				."WHERE {$tableName}2.`$compareField` is NULL";
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
-			$subsetsToCompVals=$targetDb->query($query=
-				"SELECT o.`$tableSync->subsetField`,o.`$tableSync->compareField` FROM `$table->tableName` o".PHP_EOL
-				."LEFT JOIN `$table->tableName` b ON o.`$tableSync->subsetField` = b.`$tableSync->subsetField` "
-				. "AND b.`$tableSync->compareField`$tableSync->compareOperator o.`$tableSync->compareField`".PHP_EOL
-				."WHERE b.`$tableSync->compareField` is NULL")
-				->fetchAll(PDO::FETCH_KEY_PAIR);
-
-			$tableFields_impl=$this->implodeTableFields($tableSync->fields);
-			$query="SELECT $tableFields_impl\nFROM `$table->tableName`";
-			if ($subsetsToCompVals) {
-				//if $subsetField is pk or fk and not mirror then $extremes[*]['sub'] will have to be translated
-				if (!$table->mirrorFields[$tableSync->subsetField]) {
-					if ($tableSync->subsetField===$table->pk) {
-						$translatePkTable=$table;
-					} else {
-						$linkedTableName=self::getRowByColumn($tableSync->subsetField,"colName",$table->linkedTables);
-						if ($linkedTableName) {
-							$translatePkTable=$this->tables[$linkedTableName];
+			$compVals=$targetDb->query($compValsQuery)->fetchAll(PDO::FETCH_NUM);
+			if ($compVals) {
+				//if any of the subsetFields are pk/fk and not mirror then they will have to be translated in $compVals
+				foreach ($tableSync->subsetFields as $subsetField) {
+					if (!$tableSync->table->columns[$subsetField]->mirror) {
+						$translateTable=null;
+						if ($tableSync->table->columns[$subsetField]->fk){
+							$translateTable=$this->tables[$tableSync->table->columns[$subsetField]->fk];
+						} else if ($subsetField===$tableSync->table->pk) {
+							$translateTable=$tableSync->table;
+						}
+						if ($translateTable) {
+							$subsetIndex=array_search($subsetField, $tableSync->subsetFields);
+							$this->translateIdColumnRemoveMissing($compVals,$subsetIndex,$translateTable,$sourceSide);
 						}
 					}
 				}
-				if (isset($translatePkTable)) {
-					$idsToTranslate=array_keys($subsetsToCompVals);
-					$this->addIdsToTranslate($sourceSide,$translatePkTable,$idsToTranslate);
-					$this->translateIdViaMirror($sourceSide,$translatePkTable,true);
-					foreach ($subsetsToCompVals as $subset=>$compVal) {
-						if (key_exists($subset, $translatePkTable->translateIdFrom[$sourceSide])) {
-							$subsetsAndCompVals_flat[]=$translatePkTable->translateIdFrom[$sourceSide][$subset];
-							$subsetsAndCompVals_flat[]=$compVal;
+				if ($compVals) {
+					$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+					$rowsQuery="SELECT $tableFields_impl\nFROM `$tableName`".PHP_EOL
+						."WHERE `$compareField`{$tableSync->compareOperator}CASE".PHP_EOL;
+						if (count($tableSync->subsetFields)===1) {
+							$rowsQuery.=" `{$tableSync->subsetFields[0]}`".PHP_EOL;
+							$subsetCase="WHEN ? THEN ?".PHP_EOL;
+						} else {
+							$subsetCase="WHEN (".$this->implodeTableFields($tableSync->subsetFields).")"
+								."=(?".str_repeat(",?",count($tableSync->subsetFields)-1).") THEN ?".PHP_EOL;
 						}
-					}
-				} else {
-					foreach ($subsetsToCompVals as $subset=>$compVal) {
-						$subsetsAndCompVals_flat[]=$subset;
-						$subsetsAndCompVals_flat[]=$compVal;
-					}
-				}
-				if (!empty($subsetsAndCompVals_flat)) {
-					$query.=" WHERE `$tableSync->compareField`$tableSync->compareOperator".PHP_EOL
-						."CASE `$tableSync->subsetField`".PHP_EOL;
-					$query.=str_repeat("	WHEN ? THEN ?\n", count($subsetsAndCompVals_flat)/2)."\nEND";
-					//$query.="	ELSE '".($compOp==="<"?"18446744073709551615":"-9223372036854775808")."'\nEND";
+					$rowsQuery.=str_repeat($subsetCase, count($compVals))."END";
+					$prepSelectRows=$this->dbs[$sourceSide]->prepare($rowsQuery);
+					$prepSelectRows->execute(call_user_func_array('array_merge', $compVals));
+					($rows=$prepSelectRows->fetchAll(PDO::FETCH_NUM))&&$result[$targetSide]=$rows;
 				}
 			}
-			$prepSelectRows=$this->dbs[$sourceSide]->prepare($query);
-			$prepSelectRows->execute($subsetsAndCompVals_flat);
-			$rows[$targetSide]=$prepSelectRows->fetchAll(PDO::FETCH_NUM);
 		}
-		return $rows;
+		return $result;
 	}
 	
 	/**
@@ -353,6 +372,17 @@ class Synka {
 	 * @param SynkaTableSync $tableSync*/
 	protected function analyzeTableSyncSubsetUnique($tableSync) {
 		trigger_error("Not yet implemented");
+	}
+	
+	protected function translateIdColumnRemoveMissing(&$array,$columnIndex,$table,$fromSide) {
+		$table->addIdsToTranslate($fromSide, array_column($array,$columnIndex));
+		$this->translateIdViaMirror($fromSide,$table,true);
+		foreach ($array as $compValsRowIndex=>$compValsRow) {
+			$subset=$compValsRow[$columnIndex];
+			if (!key_exists($subset,$table->translateIdFrom[$fromSide])) {
+				unset($array[$compValsRowIndex]);
+			}
+		}
 	}
 	
 	/**
@@ -434,9 +464,8 @@ class Synka {
 	 * @param type $fromIds
 	 */
 	protected function translateIdViaMirror($fromSide,$table,$possibleUnsyncedRows=false) {
-		$fromIds=array_keys($table->syncData[$fromSide]['translateIds']);
+		$fromIds=array_keys($table->translateIdFrom[$fromSide],NULL);
 		$toSide=$fromSide==='local'?'remote':'local';
-		$table->syncData[$fromSide]['translateIds']=[];
 		sort ($fromIds);
 		$placeholders='?'.str_repeat(',?', count($fromIds)-1);
 		$prepSelectMirrorValues=$this->dbs[$toSide]->prepare($query=
@@ -465,7 +494,8 @@ class Synka {
 				$result[$mirrorToOldPk[$mirror]]=$newId;
 			}
 		}
-		return $table->syncData[$fromSide]['pkTranslation']+=$result;
+		$table->translateIdFrom[$fromSide]=$result+$table->translateIdFrom[$fromSide];
+		return $result;
 	}
 	
 	/**
@@ -639,16 +669,15 @@ class Synka {
 			}
 			if ($tableSync->selectFields) {
 				$pkIndex=array_search($table->pk, $tableSync->selectFields);
-				$tableSync->insertionIds[$side]=self::unsetColumn2dArray($rows,$pkIndex);
+				$tableSync->insertionIds[$side]=self::unsetColumn2dArray($syncData[$side],$pkIndex);
 			}
 			
 			//if this table links to another table, get the ids of the linked rows, and add them to be translated
 			if (!empty($table->linkedTables)) {
 				foreach ($table->linkedTables as $referencedTableName=>$link) {
-					$linkedColumnName=$link['colName'];
-					if (!$table->columns[$linkedColumnName]->mirror) {
+					$fkIndex=array_search($link['colName'], $tableSync->copyFields);
+					if ($fkIndex!==FALSE&&!$table->columns[$link['colName']]->mirror) {
 						$referencedTable=$this->tables[$referencedTableName];
-						$fkIndex=array_search($linkedColumnName, $tableSync->copyFields);
 						$translateIds=array_filter(array_column($syncData[$side], $fkIndex));
 						$referencedTable->addIdsToTranslate($side,$translateIds);
 					}

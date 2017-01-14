@@ -12,6 +12,7 @@ class SynkaTableColumn {
 	public $key;
 	public $extra;
 	public $mirror;
+	public $fk;
 	public function __construct($name,$type,$key,$extra,$mirror) {
 		foreach (get_defined_vars() as $varName=>$val) {
 			$this->$varName=$val;
