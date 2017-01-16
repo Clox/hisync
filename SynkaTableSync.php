@@ -8,8 +8,9 @@
 
 class SynkaTableSync {
 	/**The table containing this sync
-	 * @var SynkaTable */
+	 * @var SynkaTable*/
 	public $table;
+	
 	public $syncData;
 	public $insertionIds;
 	

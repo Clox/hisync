@@ -19,8 +19,6 @@ class SynkaTable {
 	public $syncs=[];
 	
 	public $pk;
-	public $updateOnDupeKey;
-	public $updateCols;
 	public $translateIdFrom=['local'=>[],'remote'=>[]];
 	
 	/**List of tables that this table links to through foreign keys, if any.
@@ -31,6 +29,10 @@ class SynkaTable {
 	public $linkedTables;
 	
 	public $mirrorField;
+	
+	/**When sync() is called, the $compareField argument is saved in this variable, and is used for syncUpd()
+	 * @var string[]*/
+	protected $lastCompareField;
 	
 	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
@@ -43,15 +45,6 @@ class SynkaTable {
 					($column['name'],$column['type'],$column['key'],$column['extra'],$mirrorField===$column['name']);
 		}
 		$this->linkedTables=$linkedTables;
-	}
-	
-	public function insertUnique() {
-		if (!isset($this->mirrorField)) {
-			trigger_error("Can't do insertUnique() on a table with no "
-						. "specified mirrorField(specify it in in the Synka->table() method)");
-		}
-		$this->syncs['insertUnique']=true;
-		return $this;
 	}
 	
 	/**Adds a sync to the table which will be processed when calling Synka->compare() and Synka->
@@ -99,58 +92,24 @@ class SynkaTable {
 				}
 			}
 		}
+		$this->lastCompareField=$compareField;
 		$this->syncs[]=new SynkaTableSync($this,$fields, $compareField, $compareOperator, $subsetField);
 		return $this;
 	}
 	
-	public function syncCompare($fields,$compareField,$compareOperator=">") {
-		if ($fields[0]==="*-") {
-			$fields=array_intersect(array_keys($this->columns));
-		} else if ($fields==="*") {
-			$fields=array_keys($this->columns);
-		}
-		$type='compare';
-		$this->syncs[]=compact('type','fields','compareField','compareOperator');
-	}
-	
-	public function syncUnique() {
-		
-	}
-	
-	/**Adds a row-insertion-sync to the table which identifies the rows that should be copied by comparing the field
-	 * specified as $compareField between the two databases, any rows that have a value of that field higher than the
-	 * max of the other, or lower than the minimum of the other depending on $compareOperator are going to be copied.
-	 * If $subsetField is set then only rows with higher/lower values of $compareField within the same value of
-	 * $subsetField are going to be copied.
-	 * @param string $compareField The field to do the comparison on
-	 * @param string $compareOperator Eiher "<" for copying rows that are of lower values, or ">" for higher
-	 * @param string $subsetField If this is set then the comparisons are done on a per subset basis, grouped by
-	 *		the specified field. If null then only one comparison is done, on the whole table.*/
-	public function insertCompare($compareField,$compareOperator,$subsetField=null,$updateOnDupeKey=false) {
-		$this->updateOnDupeKey=$updateOnDupeKey;
-		$this->syncs['insertCompare']=compact("compareField","compareOperator","subsetField");
-		return $this;
-	}
-	
-	/**Tells Synka to do row-updating on the referenced table. The table must have a PK-column for it to work.
-	 * It works similarely to insertCompare in that it needs a field to do comparison on, to identify which side
-	 * the row is most up to date on and should be copied from.
-	 * Common usage would be something like update("updatedAt",">",["foo"]) given that the table has an
-	 * "updatedAt"-field which gets set to current timestamp when the "foo"-field is updated. It is also important
-	 * that the "updatedAt"-field cannot be null or otherwise the comparison wont work correctly.
-	 * @param string $compareField A field-name to do comparison on. Typically "updatedAt"
-	 * @param string $compareOperator Either "<" for replacing the row with the higher value of "$compareField" or ">"
-	 *									for the opposite which would be the most common one.
-	 * @param string[] $updateFields A list of columns that should be updated.
-	 * @return \SynkaTable*/
-	public function update($compareField,$compareOperator,$updateFields) {
-		$updateFields[]=$this->pk;
-		if (!in_array($compareField, $updateFields)) {
-			$updateFields[]=$compareField;
-		}
-		$this->updateCols=$updateFields;
-		$this->syncs['update']=compact("compareField","compareOperator");
-		return $this;
+	/**This is a helper-funktion for sync(). It can only be called after sync() has been called, and then it will
+	 * internally call sync as:<ol>
+	 * <li>$fields being what is specified as $fields here</li>
+	 * <li>$compareField being what is specified as $updatedAtField here</li>
+	 * <li>$compareOperator as what is specified as $compareOperator here, but default is ">"</li>
+	 * <li>$subsetField as what was used as $compareField in the last call of sync()</li><ol>
+	 * This can be usefull when first having a sync-call adding new rows, then a syncUpd-call updating old ones.
+	 * @param string[] $fields See $fields in sync()
+	 * @param string $updatedAtField Same as $compareField in sync()
+	 * @param string $compareOperator Same as $compareOperator in sync()
+	 * @return SynkaTable*/
+	public function syncUpd($fields,$updatedAtField,$compareOperator=">") {
+		return $this->sync($fields, $updatedAtField, $compareOperator, $this->lastCompareField);
 	}
 	
 	/**

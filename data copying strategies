@@ -5,23 +5,8 @@ When about to start comparing the 2 databases, lock all tables in both databases
 Examine what fields are being copied.
 
 Then when copying data of a tablesync:
-case A) if we are copying neither pk nor unique fields then we may do a simple insert of all data
-case B) else if we are copying pk and/or unique field, but the pk isn't auto-incremented then we may do insert on duplicate update
-		actually maybe this works even if pk is auto if we are also copying the pk?
-case C) else (if pk is auto generated and we're copying pk or unique key)
+case A) if there is no pk and we aren't copying any uniques then we may do a simple insert of all data
+case B) else if there is a pk which we are copying, or if there is no pk but we are copying uniques then we may do insert on duplicate ignore
+case C) else(there is a pk which we are not copying and there are uniques which we are copying) then we have to look up which uniques already exist in target db and also get their pk's.
+		simply insert any rows which uniques weren't found, and do insert on duplicate update with the ones that were found, using their pk
 
-
-
-
-
-- if we are copying neither pk nor unique fields then we may do a simple insert of all data
-- else if we are A: copying PK, or B: not copying PK but copying unique fields AND pk is not auto incremented then we may do insert on duplicate update
-
-. else (if pk is auto generated and we're copying a unique key but not the pk)
-	then we'll first have to figure out which rows have new uniques and which ones have old(ones that already exist in target DB).
-	How is this done? When a tableSync compares DB's with compareField being a unique-field and operator is != then we can save the unique-values to the table-object, so if this list is present then we can use that.
-	otherwise we'll just have to do a select-query checking which ones are new and which are old.
-	simply insert the new ones. if the update-rows or columns aren't many then issue a simple update statement with switch case, otherwise create temporary table, insert all update rows then copy the updates from the temp table.
-
-
-	
