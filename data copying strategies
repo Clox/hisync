@@ -10,3 +10,9 @@ case B) else if there is a pk which we are copying, or if there is no pk but we 
 case C) else(there is a pk which we are not copying and there are uniques which we are copying) then we have to look up which uniques already exist in target db and also get their pk's.
 		simply insert any rows which uniques weren't found, and do insert on duplicate update with the ones that were found, using their pk
 
+
+
+In analyzeTableSyncGlobalUnique() (not the subset one because it doesn't deal with real uniques)
+When it fetches the uniques from the target-db, if there is a pk-field then make it fetch that too. Save that too in SynkaTableColumn->allUniques(as val while unique is key?)
+Then when comitting the data and finding there are dupes by looking at allUniques, we can just get the id from it too and add to the rows to be updated.
+

@@ -106,9 +106,11 @@ class Synka {
 	}
 	
 	/**Adds the pk-field of a table to a list of fields if required, unless it already is in there.
-	 * It is "required" if any other tables that are being synced are linking to this table also that the PK-field is
-	 * not also a mirror-field or it wont be needed because the whole reason for adding the pk to the fields is so that
-	 * it can be used for translating ids when inserting rows in other tables that are linking to this.
+	 * The use of it is to be able to fetch and save the pk's of the source db even if they wont be inserted
+	 * intro the target db, then when the data is inserted into the target db, we can use the list to figure out
+	 * what the id of each row is in the source-db without querying for it, so that we can use it for id-translation.
+	 * The pk-field is added ifany other tables that are being synced are linking to this table and also that the
+	 * PK-field is not also a mirror-field since then it wont be needed.
 	 * @param SynkaTable $table*/
 	protected function setTableSyncsSelectFields($table) {
 		$tableLinkedTo=null;
@@ -205,36 +207,52 @@ class Synka {
 		$syncData=[];
 		$table=$tableSync->table;
 		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
-		$singleCmp=!isset($tableSync->compareFields[1]);
-		$compareFields_impl=$this->implodeTableFields($tableSync->compareFields);
+		$uniqueFields_impl=$uniqueFieldsAndPK_impl=$this->implodeTableFields($tableSync->compareFields);
+		foreach ($table->syncs as $otherTableSync) {
+			if ($otherTableSync->copyStrategy===3) {
+				$getTargetPkAlongUnique=true;
+				$uniqueFieldsAndPK_impl.=",`$table->pk`";
+				break;
+			}
+		}
+		
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
-			$sourceDb=$this->dbs[$sourceSide];
 			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
 				."FROM `$table->tableName`";
-			$notAmong=$targetDb->query("SELECT $compareFields_impl FROM `$table->tableName`")
-				->fetchAll($singleCmp?PDO::FETCH_COLUMN:PDO::FETCH_NUM);
+			$notAmong=$targetDb->query("SELECT $uniqueFieldsAndPK_impl FROM `$table->tableName`")
+				->fetchAll(PDO::FETCH_NUM);
 			if ($notAmong) {
-				if ($singleCmp) {
+				if (count($tableSync->compareFields)===1) {
 					$placeHolders='?'.str_repeat(',?', count($notAmong)-1);
-					$table->columns[$tableSync->compareFields[0]]->allUniques[$targetSide]=array_fill_keys($notAmong,1);
+					if (isset($getTargetPkAlongUnique)) {
+						$table->columns[$tableSync->compareFields[0]]->allUniques[$targetSide]=
+							array_combine(array_column($notAmong,0), array_column($notAmong,1));
+					}
 				} else {
 					$fieldPlaceholders='?'.str_repeat(',?', count($tableSync->compareFields)-1);
 					$placeHolders="($fieldPlaceholders)".str_repeat(",($fieldPlaceholders)", count($notAmong)-1);
-					$notAmong=call_user_func_array('array_merge', $notAmong);
 					foreach ($tableSync->compareFields as $fieldIndex=>$compareField) {
 						$table->columns[$compareField]->allUniques[$targetSide]
 								=array_fill_keys(array_column($notAmong,$fieldIndex),1);
 					}
+					if (isset($getTargetPkAlongUnique)) {
+						foreach ($notAmong as $notAmongRow) {
+							$table->columns[$compareField]->allUniques[$targetSide]
+								[implode(',',array_slice($notAmongRow,-1))]=end($notAmongRow);
+						}
+					}
 				}
-				$selectRowsQuery.=PHP_EOL."WHERE ($compareFields_impl) NOT IN ($placeHolders)";
+				$selectRowsQuery.=PHP_EOL."WHERE ($uniqueFields_impl) NOT IN ($placeHolders)";
+				if (isset($getTargetPkAlongUnique)) {
+					self::unsetColumn2dArray($notAmong, count($tableSync->compareFields));
+				}
+				$notAmong=call_user_func_array('array_merge', $notAmong);
 			}
-			$prepSelectRows=$sourceDb->prepare($selectRowsQuery);
+			$prepSelectRows=$this->dbs[$sourceSide]->prepare($selectRowsQuery);
 			$prepSelectRows->execute($notAmong);
-			$selectedRows=$prepSelectRows->fetchAll(PDO::FETCH_NUM);
-			if ($selectedRows) {
+			if ($selectedRows=$prepSelectRows->fetchAll(PDO::FETCH_NUM))
 				$syncData[$targetSide]=$selectedRows;
-			}
 		}
 		return $syncData;
 	}
@@ -414,19 +432,11 @@ class Synka {
 	protected function copyData($tableSync,$side) {
 		//insert using temp table:
 		//https://ricochen.wordpress.com/2011/06/21/bulk-update-in-mysql-with-the-use-of-temporary-table/
-		$table=$tableSync->table;
+
 		$this->translateFks($tableSync, $side);
 		
-		$copyingUnique=null;
-		foreach ($tableSync->copyFields as $colName) {
-			$colInfo=$table->columns[$colName];
-			if ($colInfo->key==="UNI") {
-				$copyingUnique=true;
-				break;
-			}
-		}
-		if ((!$table->pk&&!$copyingUnique)||in_array($table->pk, $tableSync->copyFields)) {
-			$this->insertRows($tableSync, $side, $copyingUnique);
+		if ($tableSync->copyStrategy<3) {
+			$this->insertRows($tableSync, $side, $tableSync->copyStrategy===2);
 		} else {
 			$this->insertAndUpdateRows($tableSync, $side, true);
 		}
@@ -462,7 +472,7 @@ class Synka {
 			$prepRowInsert->execute($values);
 			if ($tableSync->selectFields) {//if other tables link to this one and need the generated ids for translating
 				$firstInsertedId=$this->dbs[$side]->lastInsertId();//actually first generated id from the last statement
-				foreach ($tableSync->insertionIds[$side] as $sourceId) {
+				foreach ($tableSync->insertsSourceIds[$side] as $sourceId) {
 					$table->translateIdFrom[$sourceSide][$sourceId]=$firstInsertedId+$rowIndex++;
 				}
 			}
@@ -549,7 +559,7 @@ class Synka {
 			}
 			if ($tableSync->selectFields) {
 				$pkIndex=array_search($table->pk, $tableSync->selectFields);
-				$tableSync->insertionIds[$side]=self::unsetColumn2dArray($syncData[$side],$pkIndex);
+				$tableSync->insertsSourceIds[$side]=self::unsetColumn2dArray($syncData[$side],$pkIndex);
 			}
 			
 			//if this table links to another table, get the ids of the linked rows, and add them to be translated
