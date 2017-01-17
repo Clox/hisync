@@ -207,46 +207,21 @@ class Synka {
 		$syncData=[];
 		$table=$tableSync->table;
 		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
-		$uniqueFields_impl=$uniqueFieldsAndPK_impl=$this->implodeTableFields($tableSync->compareFields);
-		foreach ($table->syncs as $otherTableSync) {
-			if ($otherTableSync->copyStrategy===3) {
-				$getTargetPkAlongUnique=true;
-				$uniqueFieldsAndPK_impl.=",`$table->pk`";
-				break;
-			}
-		}
-		
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
 			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
 				."FROM `$table->tableName`";
-			$notAmong=$targetDb->query("SELECT $uniqueFieldsAndPK_impl FROM `$table->tableName`")
-				->fetchAll(PDO::FETCH_NUM);
+			$notAmong=$this->getGlobalUniqueCompareValues($targetSide,$tableSync);
+			$this->translateFields($tableSync, $targetSide, false, $notAmong, $tableSync->compareFields);
 			if ($notAmong) {
+				$uniqueFields_impl=$this->implodeTableFields($tableSync->compareFields);
 				if (count($tableSync->compareFields)===1) {
 					$placeHolders='?'.str_repeat(',?', count($notAmong)-1);
-					if (isset($getTargetPkAlongUnique)) {
-						$table->columns[$tableSync->compareFields[0]]->allUniques[$targetSide]=
-							array_combine(array_column($notAmong,0), array_column($notAmong,1));
-					}
 				} else {
 					$fieldPlaceholders='?'.str_repeat(',?', count($tableSync->compareFields)-1);
 					$placeHolders="($fieldPlaceholders)".str_repeat(",($fieldPlaceholders)", count($notAmong)-1);
-					foreach ($tableSync->compareFields as $fieldIndex=>$compareField) {
-						$table->columns[$compareField]->allUniques[$targetSide]
-								=array_fill_keys(array_column($notAmong,$fieldIndex),1);
-					}
-					if (isset($getTargetPkAlongUnique)) {
-						foreach ($notAmong as $notAmongRow) {
-							$table->columns[$compareField]->allUniques[$targetSide]
-								[implode(',',array_slice($notAmongRow,-1))]=end($notAmongRow);
-						}
-					}
 				}
 				$selectRowsQuery.=PHP_EOL."WHERE ($uniqueFields_impl) NOT IN ($placeHolders)";
-				if (isset($getTargetPkAlongUnique)) {
-					self::unsetColumn2dArray($notAmong, count($tableSync->compareFields));
-				}
 				$notAmong=call_user_func_array('array_merge', $notAmong);
 			}
 			$prepSelectRows=$this->dbs[$sourceSide]->prepare($selectRowsQuery);
@@ -255,6 +230,39 @@ class Synka {
 				$syncData[$targetSide]=$selectedRows;
 		}
 		return $syncData;
+	}
+	
+	protected function getGlobalUniqueCompareValues($side,$tableSync) {
+		$selectFields_impl=$this->implodeTableFields($tableSync->compareFields);
+		$numUniqueFields=count($tableSync->compareFields);
+		$alsoGetPk=null;
+		foreach ($tableSync->table->syncs as $otherTableSync) {
+			if ($otherTableSync->copyStrategy===3) {
+				$alsoGetPk=true;
+				$selectFields_impl.=",`{$tableSync->table->pk}`";
+				break;
+			}
+		}
+		$uniqueRows=$this->dbs[$side]->query("SELECT $selectFields_impl FROM `{$tableSync->table->tableName}`")
+			->fetchAll(PDO::FETCH_NUM);
+		if ($uniqueRows) {
+			if ($numUniqueFields===1) {
+				if ($alsoGetPk) {
+					$tableSync->uniqueMap=array_combine(array_column($uniqueRows,0),array_column($uniqueRows,1));
+				} else {
+					$tableSync->uniqueMap=array_fill_keys(array_column($uniqueRows,0),true);
+				}
+			} else {
+				foreach ($uniqueRows as $uniqueRow) {
+					$tableSync->uniqueMap[implode(',',array_slice($uniqueRow,0,$numUniqueFields))]=
+							$alsoGetPk?$uniqueRow[$numUniqueFields]:true;
+				}
+			}
+			if ($alsoGetPk) {
+				self::unsetColumn2dArray($uniqueRows, $numUniqueFields);
+			}
+		}
+		return $uniqueRows;
 	}
 	
 	/**
@@ -278,20 +286,7 @@ class Synka {
 			$compVals=$targetDb->query($compValsQuery)->fetchAll(PDO::FETCH_NUM);
 			if ($compVals) {
 				//if any of the subsetFields are pk/fk and not mirror then they will have to be translated in $compVals
-				foreach ($tableSync->subsetFields as $subsetField) {
-					if (!$tableSync->table->columns[$subsetField]->mirror) {
-						$translateTable=null;
-						if ($tableSync->table->columns[$subsetField]->fk){
-							$translateTable=$this->tables[$tableSync->table->columns[$subsetField]->fk];
-						} else if ($subsetField===$tableSync->table->pk) {
-							$translateTable=$tableSync->table;
-						}
-						if ($translateTable) {
-							$subsetIndex=array_search($subsetField, $tableSync->subsetFields);
-							$this->translateIdColumnRemoveMissing($compVals,$subsetIndex,$translateTable,$targetSide);
-						}
-					}
-				}
+				$this->translateFields($tableSync,$targetSide,false,$compVals,$tableSync->subsetFields);
 				if ($compVals) {
 					$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
 					$rowsQuery="SELECT $tableFields_impl\nFROM `$tableName`".PHP_EOL
@@ -313,6 +308,51 @@ class Synka {
 		return $result;
 	}
 	
+	/**Takes a 2D array and a specification of fields/columns and translates IDs.
+	 * Non-ID fields will be ignored. If there's an ID that can't be translated because its counterpart isn't present
+	 * in the other DB then its row will be deleted.
+	 * @param SynkaTableSync $table Only used for looking up info on the fields
+	 * @param string "local"|"remote" $fromSide The side which the IDs should be translated from
+	 * @param array[] $data The data with columns to be translated
+	 * @param string[] $fields field-names which should have the same index as its column in $data.
+	 * Nulls will result in those columns being ignored. Fields which arent translateable will be ignored too.
+	 * @$possibleUnknownIds If this is true then it means there is possibly IDs that don't yet have a counterpart
+	 * on the from-side*/
+	protected function translateFields($tableSync,$fromSide,$insertState=true,&$data=null,$fields=null) {
+		if ($insertState) {
+			$data=&$tableSync->syncData[$fromSide==='local'?'remote':'local'];
+			$fields=$tableSync->copyFields;
+		}
+		foreach ($fields as $fieldIndex=>$fieldName) {
+			if (!$tableSync->table->columns[$fieldName]->mirror) {
+				$translateTable=null;
+				if ($tableSync->table->columns[$fieldName]->fk){
+					$translateTable=$this->tables[$tableSync->table->columns[$fieldName]->fk];
+				} else if ($fieldName===$tableSync->table->pk) {
+					//do we ever actually need to translate pks with this function?
+					//either we are inserting data an if it is mirror pk then translation is not
+					//needed(and this block wont even be reached), if its not mirror then the pk shouldn't be copied, 
+					//should it...? Or am I not thinking correctly now?
+					$translateTable=$tableSync->table;
+				}
+				if ($translateTable) {
+					if (!$insertState) {
+						$translateTable->addIdsToTranslate($fromSide, array_column($data,$fieldIndex));
+						$this->translateIdViaMirror($fromSide,$translateTable,true);
+					}
+					foreach ($data as $rowIndex=>$row) {
+						$id=$row[$fieldIndex];
+						if ($insertState||key_exists($id,$translateTable->translateIdFrom[$fromSide])) {
+							$data[$rowIndex][$fieldIndex]=$translateTable->translateIdFrom[$fromSide][$id];
+						} else {
+							unset($data[$rowIndex]);
+						}
+					}
+				}
+			}
+		}
+	}
+	
 	/**
 	 * 
 	 * @param SynkaTableSync $tableSync*/
@@ -320,35 +360,31 @@ class Synka {
 		trigger_error("Not yet implemented");
 	}
 	
-	protected function translateIdColumnRemoveMissing(&$array,$columnIndex,$table,$fromSide) {
-		$table->addIdsToTranslate($fromSide, array_column($array,$columnIndex));
-		$this->translateIdViaMirror($fromSide,$table,true);
-		foreach ($array as $compValsRowIndex=>$compValsRow) {
-			$subset=$compValsRow[$columnIndex];
-			if (!key_exists($subset,$table->translateIdFrom[$fromSide])) {
-				unset($array[$compValsRowIndex]);
-			}
-		}
-	}
-	
 	public function commit() {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
-		foreach ($this->dbs as $side=>$db) {
+		/*foreach ($this->dbs as $side=>$db) {
 			foreach ($this->tables as $table) {
 				$this->translateIdViaMirror($side,$table);
 			}
-		}
-		foreach ($this->dbs as $targetSide=>$targetDb) {
-			foreach ($this->tables as $table) {
-				foreach ($table->syncs as $tableSync) {						
+		}*/
+		foreach ($this->tables as $table) {
+			foreach ($this->dbs as $targetSide=>$targetDb) {
+			$sourceSide=$targetSide==='local'?'remote':'remote';
+				foreach ($table->syncs as $tableSync) {		
 					if (isset($tableSync->syncData[$targetSide])) {
-						$this->copyData($tableSync,$targetSide);
+						$this->translateFields($tableSync, $sourceSide);
+						if ($tableSync->copyStrategy<3) {
+							$this->insertRows($tableSync, $targetSide, $tableSync->copyStrategy===2);
+						} else {
+							$this->insertAndUpdateRows($tableSync, $targetSide);
+						}
 					}
 				}
+				$this->translateIdViaMirror($sourceSide,$table);
 			}
-			$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');	
 		}
+		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');	
 	}
 	
 	/**
@@ -396,52 +432,7 @@ class Synka {
 				}
 			}
 		}
-	}
-	
-	/**
-	 * 
-	 * @param SynkaTableSync $tableSync
-	 * @param string $side
-	 */
-	protected function translateFks ($tableSync,$side) {
-		$sourceSide=$side==="local"?"remote":"local";
-		$table=$tableSync->table;
-		if (!empty($table->linkedTables)) {//if this table has any fks that need to be translated before insertion
-			foreach ($table->linkedTables as $referencedTableName=>$link) {
-				$columnName=$link["colName"];
-				$referencedTable=$this->tables[$referencedTableName];
-				if (!$table->columns[$columnName]->mirror&&!in_array($columnName, $tableSync->compareFields)
-				&&!($tableSync->subsetFields&&in_array($columnName, $tableSync->subsetFields))) {
-					$columnIndex=array_search($columnName, $tableSync->copyFields);
-					foreach ($tableSync->syncData[$side] as $rowIndex=>$row) {
-						if ($row[$columnIndex]) {
-							$tableSync->syncData[$side][$rowIndex][$columnIndex]=
-								$referencedTable->translateIdFrom[$sourceSide][$row[$columnIndex]];
-						}
-					}
-				}
-			}
-		}
-	}
-	
-	/**
-	 * 
-	 * @param SynkaTableSync $tableSync
-	 * @param string $side
-	 * @return type*/
-	protected function copyData($tableSync,$side) {
-		//insert using temp table:
-		//https://ricochen.wordpress.com/2011/06/21/bulk-update-in-mysql-with-the-use-of-temporary-table/
-
-		$this->translateFks($tableSync, $side);
-		
-		if ($tableSync->copyStrategy<3) {
-			$this->insertRows($tableSync, $side, $tableSync->copyStrategy===2);
-		} else {
-			$this->insertAndUpdateRows($tableSync, $side, true);
-		}
-	}
-	
+	}	
 	
 	protected function insertRows($tableSync,$side,$onDupeUpdate) {
 		$cols=$tableSync->copyFields;
@@ -484,21 +475,30 @@ class Synka {
 	 * @param SynkaTableSync $tableSync
 	 * @param string $side
 	 */
-	protected function insertAndUpdateRows($tableSync,$side,$uniqueField) {
+	protected function insertAndUpdateRows($tableSync,$side) {
 		$db=$this->dbs[$side];
 		$table=$tableSync->table;
 		$cols=$tableSync->copyFields;
-		$newUniqueIndex=array_search($uniqueField,$tableSync->copyFields);
-		$newUniqueValues=array_column($tableSync->syncData[$side], $newUniqueIndex);
-		
-		$oldUniques=$table->columns[$uniqueField]->allUniques[$side];
-		if (!$oldUniques) {
-			$uniquePlaceholders='?'.str_repeat(',?', count($newUniqueValues)-1);
-			$prepGetOldUniques=$db->prepare
-				("SELECT `$uniqueField` FROM `$table->tableName` WHERE `$uniqueField` IN ($uniquePlaceholders)");
-			$prepGetOldUniques->execute($newUniqueValues);
-			$oldUniques=array_fill_keys($prepGetOldUniques->fetchAll(PDO::FETCH_COLUMN),1);
+		if (count($tableSync->compareFields)===1) {
+			$uniqueField=$tableSync->compareFields[0];
+			$newUniqueIndex=array_search($uniqueField,$tableSync->copyFields);
+			$newUniqueValues=array_column($tableSync->syncData[$side], $newUniqueIndex);
+			$oldUniques=$table->columns[$uniqueField]->allUniques[$side];
+			if (!$oldUniques) {
+				$uniquePlaceholders='?'.str_repeat(',?', count($newUniqueValues)-1);
+				$prepGetOldUniques=$db->prepare
+					("SELECT `$uniqueField` FROM `$table->tableName` WHERE `$uniqueField` IN ($uniquePlaceholders)");
+				$prepGetOldUniques->execute($newUniqueValues);
+				$oldUniques=array_fill_keys($prepGetOldUniques->fetchAll(PDO::FETCH_COLUMN),1);
+			}
 		}
+		foreach ($tableSync->compareFields as $uniqueField) {
+			$uniquFields[array_search($uniqueField, $tableSync->copyFields)]=$uniqueField;
+		}
+		
+		
+		
+		
 		
 		
 		$updates=[];
