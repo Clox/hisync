@@ -4,11 +4,12 @@ When about to start comparing the 2 databases, lock all tables in both databases
 
 Examine what fields are being copied.
 
-Then when copying data of a tablesync:
-case A) if there is no pk and we aren't copying any uniques then we may do a simple insert of all data
-case B) else if there is a pk which we are copying, or if there is no pk but we are copying uniques then we may do insert on duplicate ignore
-case C) else(there is a pk which we are not copying and there are uniques which we are copying) then we have to look up which uniques already exist in target db and also get their pk's.
-		simply insert any rows which uniques weren't found, and do insert on duplicate update with the ones that were found, using their pk
+case A) If we aren't copying uniques or pks, or we are copying them but they are also being compared
+	simple insert
+case B) else if we are copying pk, or we are copying non compared uniques and there is no pk
+	insert on duplicate ignore
+case C) else (if there is a pk and we're not copying it, and we are copying uniques which aren't being compared
+	work out which uniques already exist, update them with insert on update ignore, insert the rest
 
 
 

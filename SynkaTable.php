@@ -34,14 +34,6 @@ class SynkaTable {
 	 * @var string[]*/
 	protected $lastCompareField;
 	
-	/**If this is either a unique coumn or a non auto incremented PK, and a global unique sync with this as 
-	 * (one of) its compare-field(s) then when it fetches all the unique values to compare with this property should be
-	 * populated with all of the unique values in the appropriate sub-array (local/remote). This is so that when when
-	 * rows are being copied to the table it is known without doing an extra query whether they should be inserted
-	 * because the unique value doesn't already exist, or used to updated since they already exist
-	 * @var string[][] */
-	public $allUniques=['local'=>[],'remote'=>[]];
-	
 	public function __construct($tableName,$mirrorField,$columns,$linkedTables) {
 		$this->tableName=$tableName;
 		$this->mirrorField=$mirrorField;

@@ -24,28 +24,37 @@ class SynkaTableSync {
 	 * @var int*/
 	public $copyStrategy;
 	
+	/**If this is either a unique coumn or a non auto incremented PK, and a global unique sync with this as 
+	 * (one of) its compare-field(s) then when it fetches all the unique values to compare with this property should be
+	 * populated with all of the unique values in the appropriate sub-array (local/remote). This is so that when when
+	 * rows are being copied to the table it is known without doing an extra query whether they should be inserted
+	 * because the unique value doesn't already exist, or used to updated since they already exist
+	 * @var string[][] */
+	public $y=['local'=>[],'remote'=>[]];
+	
 	
 	public $copyFields,$compareFields,$compareOperator,$subsetFields,$selectFields;
 	public function __construct($table,$copyFields,$compareFields,$compareOperator,$subsetFields) {
 		foreach (get_defined_vars() as $varName=>$val) {
 			$this->$varName=$val;
 		}
-		$copyingUnique=$copyingPk=null;
-		$hasNonComparedPk=$table->pk&&!in_array($table->pk,$compareFields);
+		//$hasNonCopiedPk, $copyingNonComparedPk, $copyingNonComparedUnique=
+		$hasNonCopiedPk=$table->pk&&!in_array($table->pk, $copyFields);
+		$copyingNonComparedPk=$table->pk&&!in_array($table->pk, $compareFields)&&in_array($table->pk, $copyFields);
+		$copyingNonComparedUnique=null;
 		foreach ($copyFields as $colName) {
-			$colInfo=$table->columns[$colName];
-			if ($colInfo->key==="UNI") {
-				$copyingUnique=true;
-			} else if ($colInfo->key==="PRI") {
-				$copyingPk=true;
+			if ($table->columns[$colName]->key==="UNI"&&!in_array($colName, $compareFields)) {
+				$copyingNonComparedUnique=true;
+				break;
 			}
 		}
-		if (!$hasNonComparedPk&&!$copyingUnique) {
+		if (!$copyingNonComparedPk&&!$copyingNonComparedUnique) {
 			$this->copyStrategy=1;
-		} else if ($copyingPk||(!$hasNonComparedPk&&$copyingUnique)) {
+		} else if ($table->pk&&!$hasNonCopiedPk) {
 			$this->copyStrategy=2;
-		} else {//if ($table->pk&&!$copyingPk&&$copyingUnique)
+		} else {//} else if ($hasNonCopiedPk&&$copyingNonComparedUnique) {
 			$this->copyStrategy=3;
 		}
+		$a=1;
 	}
 }

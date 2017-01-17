@@ -236,7 +236,7 @@ class Synka {
 		$selectFields_impl=$this->implodeTableFields($tableSync->compareFields);
 		$numUniqueFields=count($tableSync->compareFields);
 		$alsoGetPk=null;
-		foreach ($tableSync->table->syncs as $otherTableSync) {
+		foreach ($tableSync->table->syncs as $otherTableSync) {//should we just be checking the current $tableSync...?
 			if ($otherTableSync->copyStrategy===3) {
 				$alsoGetPk=true;
 				$selectFields_impl.=",`{$tableSync->table->pk}`";
@@ -323,29 +323,33 @@ class Synka {
 			$data=&$tableSync->syncData[$fromSide==='local'?'remote':'local'];
 			$fields=$tableSync->copyFields;
 		}
-		foreach ($fields as $fieldIndex=>$fieldName) {
-			if (!$tableSync->table->columns[$fieldName]->mirror) {
-				$translateTable=null;
-				if ($tableSync->table->columns[$fieldName]->fk){
-					$translateTable=$this->tables[$tableSync->table->columns[$fieldName]->fk];
-				} else if ($fieldName===$tableSync->table->pk) {
-					//do we ever actually need to translate pks with this function?
-					//either we are inserting data an if it is mirror pk then translation is not
-					//needed(and this block wont even be reached), if its not mirror then the pk shouldn't be copied, 
-					//should it...? Or am I not thinking correctly now?
-					$translateTable=$tableSync->table;
-				}
-				if ($translateTable) {
-					if (!$insertState) {
-						$translateTable->addIdsToTranslate($fromSide, array_column($data,$fieldIndex));
-						$this->translateIdViaMirror($fromSide,$translateTable,true);
+		if ($data) {
+			foreach ($fields as $fieldIndex=>$fieldName) {
+				if (!$tableSync->table->columns[$fieldName]->mirror) {
+					$translateTable=null;
+					if ($tableSync->table->columns[$fieldName]->fk){
+						$translateTable=$this->tables[$tableSync->table->columns[$fieldName]->fk];
+					} else if ($fieldName===$tableSync->table->pk) {
+						//do we ever actually need to translate pks with this function?
+						//either we are inserting data an if it is mirror pk then translation is not needed(and this
+						//block wont even be reached), if its not mirror then the pk shouldn't be copied, 
+						//should it...? Or am I not thinking correctly now?
+						$translateTable=$tableSync->table;
 					}
-					foreach ($data as $rowIndex=>$row) {
-						$id=$row[$fieldIndex];
-						if ($insertState||key_exists($id,$translateTable->translateIdFrom[$fromSide])) {
-							$data[$rowIndex][$fieldIndex]=$translateTable->translateIdFrom[$fromSide][$id];
-						} else {
-							unset($data[$rowIndex]);
+					if ($translateTable) {
+						if (!$insertState) {
+							$translateTable->addIdsToTranslate($fromSide, array_column($data,$fieldIndex));
+							$this->translateIdViaMirror($fromSide,$translateTable,true);
+						}
+						foreach ($data as $rowIndex=>$row) {
+							$id=$row[$fieldIndex];
+							if ($id) {//because it may be a null fk
+								if ($insertState||key_exists($id,$translateTable->translateIdFrom[$fromSide])) {
+									$data[$rowIndex][$fieldIndex]=$translateTable->translateIdFrom[$fromSide][$id];
+								} else {
+									unset($data[$rowIndex]);
+								}
+							}
 						}
 					}
 				}
@@ -363,14 +367,9 @@ class Synka {
 	public function commit() {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
-		/*foreach ($this->dbs as $side=>$db) {
-			foreach ($this->tables as $table) {
-				$this->translateIdViaMirror($side,$table);
-			}
-		}*/
 		foreach ($this->tables as $table) {
 			foreach ($this->dbs as $targetSide=>$targetDb) {
-			$sourceSide=$targetSide==='local'?'remote':'remote';
+			$sourceSide=$targetSide==='local'?'remote':'local';
 				foreach ($table->syncs as $tableSync) {		
 					if (isset($tableSync->syncData[$targetSide])) {
 						$this->translateFields($tableSync, $sourceSide);
@@ -476,9 +475,14 @@ class Synka {
 	 * @param string $side
 	 */
 	protected function insertAndUpdateRows($tableSync,$side) {
+		trigger_error("Not implemented.");
 		$db=$this->dbs[$side];
 		$table=$tableSync->table;
 		$cols=$tableSync->copyFields;
+		$compareFields=$tableSync->compareFields;
+		foreach ($tableSync->table->syncs as $otherTableSync) {
+//			if ($compareFields===$otherTableSync->subsetFields)
+		}
 		if (count($tableSync->compareFields)===1) {
 			$uniqueField=$tableSync->compareFields[0];
 			$newUniqueIndex=array_search($uniqueField,$tableSync->copyFields);
