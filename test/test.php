@@ -36,4 +36,4 @@ $synka->table("tickers_in_strategies")->sync("*",["strategyId","tickerId"],"!=")
 $syncData=$synka->analyze(false);//optional, if not called explicitly then Synka->sync() will call it
 $synka->commit();
 
-//echo $synka->checkForDiscrepancies()?"match":"mismatch";
+echo $synka->checkForDiscrepancies()?"match":"mismatch";
