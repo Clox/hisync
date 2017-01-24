@@ -54,7 +54,8 @@ class SynkaTester extends Synka {
 				$data[$currentSide][$tableName]=array_values($table);
 			}
 		}
-		if ($data['local']!==$data['remote']) {
+		$match=$data['local']==$data['remote'];
+		if (!$match) {
 			foreach ($data['local'] as $localTableName=>$localTable) {
 				if ($localTable!=$data['remote'][$localTableName]) {
 					foreach ($localTable as $localRowIndex=>$localRow) {
@@ -66,7 +67,7 @@ class SynkaTester extends Synka {
 				}
 			}
 		}
-		$match=$data['local']==$data['remote'];
+		
 		return $match;
 		/*
 		foreach ($data['local'] as $tableName=>$localTable) {

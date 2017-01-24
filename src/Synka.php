@@ -270,17 +270,19 @@ class Synka {
 	 * @param SynkaTableSync $tableSync*/
 	protected function analyzeTableSyncSubsetBeyond($tableSync) {
 		$result=[];
-		$compValsJoins=$compValsSelectSubsets=$compValsQuery="";
 		$tableName=$tableSync->table->tableName;
 		$compareField=$tableSync->compareFields[0];
+		$maxOrMin=$tableSync->compareOperator==="<"?"MIN":"MAX";
+		$subsetFields_impl=$this->implodeTableFields($tableSync->subsetFields);
+		$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`";
 		foreach ($tableSync->subsetFields as $subsetField) {
-			$compValsJoins.="$tableName.`$subsetField`={$tableName}2.`$subsetField` AND ";
-			$compValsSelectSubsets.="`$tableName`.`$subsetField`,";
+			if (!($tableSync->table->columns[$subsetField]->key==="UNI"||$tableSync->table->pk===$subsetField)) {
+				$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`".PHP_EOL
+				."WHERE `$compareField`=(SELECT $maxOrMin(`$compareField`) FROM `$tableName` `{$tableName}2`"
+										."WHERE `{$tableName}2`.`$compareField`=`$tableName`.`$compareField`)";
+				break;
+			}
 		}
-		$compValsQuery="SELECT {$compValsSelectSubsets}`$tableName`.`$compareField` FROM `$tableName`".PHP_EOL
-				."LEFT JOIN `$tableName` {$tableName}2 ON $compValsJoins"
-				."{$tableName}2.`$compareField`$tableSync->compareOperator `$tableName`.`$compareField`".PHP_EOL
-				."WHERE {$tableName}2.`$compareField` is NULL";
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
 			$compVals=$targetDb->query($compValsQuery)->fetchAll(PDO::FETCH_NUM);
