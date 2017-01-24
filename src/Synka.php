@@ -52,7 +52,7 @@ class Synka {
 			$exceptColumns=PHP_EOL."AND COLUMN_NAME NOT IN ($ignoredColumns_impl)";
 		}
 		$columns=$this->dbs['local']->query(//get all columns of this table except manually ignored ones
-			"SELECT COLUMN_NAME name,COLUMN_KEY 'key',DATA_TYPE type, EXTRA extra".PHP_EOL
+			"SELECT COLUMN_NAME name,COLUMN_KEY 'key',COLUMN_TYPE type, EXTRA extra, IS_NULLABLE nullable".PHP_EOL
 			."FROM INFORMATION_SCHEMA.COLUMNS".PHP_EOL
 			."WHERE TABLE_SCHEMA=DATABASE()".PHP_EOL
 			."AND TABLE_NAME='$tableName'"
@@ -152,9 +152,12 @@ class Synka {
 				$db->exec("LOCK TABLES $lockStmt");
 			}
 		}
+		$startTime=  microtime(1);
 		foreach ($this->tables as $table) {
 			$this->setTableSyncsSelectFields($table);
+			$tableSyncI=0;
 			foreach ($table->syncs as $tableSync) {
+				++$tableSyncI;
 				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
 					case [true,true]:
 						$syncData=$this->analyzeTableSyncSubsetUnique($tableSync);
@@ -274,14 +277,22 @@ class Synka {
 		$compareField=$tableSync->compareFields[0];
 		$maxOrMin=$tableSync->compareOperator==="<"?"MIN":"MAX";
 		$subsetFields_impl=$this->implodeTableFields($tableSync->subsetFields);
-		$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`";
+		$needJoin=null;
+		$subsetJoinPart="";
 		foreach ($tableSync->subsetFields as $subsetField) {
 			if (!($tableSync->table->columns[$subsetField]->key==="UNI"||$tableSync->table->pk===$subsetField)) {
-				$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`".PHP_EOL
-				."WHERE `$compareField`=(SELECT $maxOrMin(`$compareField`) FROM `$tableName` `{$tableName}2`"
-										."WHERE `{$tableName}2`.`$compareField`=`$tableName`.`$compareField`)";
-				break;
+				$needJoin=true;
 			}
+			if ($subsetJoinPart)
+				$subsetJoinPart.=" AND ";
+			$subsetJoinPart.="`$tableName`.`$subsetField`={$tableName}2.`$subsetField`";
+		}
+		if ($needJoin) {
+			$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`".PHP_EOL
+				."WHERE `$compareField`=(SELECT $maxOrMin(`$compareField`) FROM `$tableName` `{$tableName}2`"
+										." WHERE $subsetJoinPart)";
+		} else {
+			$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`";
 		}
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
@@ -290,24 +301,88 @@ class Synka {
 				//if any of the subsetFields are pk/fk and not mirror then they will have to be translated in $compVals
 				$this->translateFields($tableSync,$targetSide,false,$compVals,$tableSync->subsetFields);
 				if ($compVals) {
-					$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
-					$rowsQuery="SELECT $tableFields_impl\nFROM `$tableName`".PHP_EOL
-						."WHERE `$compareField`{$tableSync->compareOperator}CASE".PHP_EOL;
-						if (count($tableSync->subsetFields)===1) {
-							$rowsQuery.=" `{$tableSync->subsetFields[0]}`".PHP_EOL;
-							$subsetCase="WHEN ? THEN ?".PHP_EOL;
-						} else {
-							$subsetCase="WHEN (".$this->implodeTableFields($tableSync->subsetFields).")"
-								."=(?".str_repeat(",?",count($tableSync->subsetFields)-1).") THEN ?".PHP_EOL;
-						}
-					$rowsQuery.=str_repeat($subsetCase, count($compVals))."END";
-					$prepSelectRows=$this->dbs[$sourceSide]->prepare($rowsQuery);
-					$prepSelectRows->execute(call_user_func_array('array_merge', $compVals));
-					($rows=$prepSelectRows->fetchAll(PDO::FETCH_NUM))&&$result[$targetSide]=$rows;
+					//$rows=$this->getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide);
+					$rows=$this->getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide);
+					if ($rows) {
+						$result[$targetSide]=$rows;
+					}
 				}
 			}
 		}
 		return $result;
+	}
+	
+	function getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide) {
+		$tableName=$tableSync->table->tableName;
+		$compareField=$tableSync->compareFields[0];
+		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+		$rowsQueryStart="SELECT $tableFields_impl\nFROM `$tableName`".PHP_EOL
+						."WHERE `$compareField`{$tableSync->compareOperator}CASE".PHP_EOL;
+		if (count($tableSync->subsetFields)===1) {
+			$rowsQueryStart.=" `{$tableSync->subsetFields[0]}`".PHP_EOL;
+			$subsetCase="WHEN ? THEN ?".PHP_EOL;
+		} else {
+			$subsetCase="WHEN (".$this->implodeTableFields($tableSync->subsetFields).")"
+				."=(?".str_repeat(",?",count($tableSync->subsetFields)-1).") THEN ?".PHP_EOL;
+		}
+		$rows=[];
+		while ($compValsPortion=array_splice($compVals,0,1000)) {
+			$rowsQuery=$rowsQueryStart.str_repeat($subsetCase, count($compValsPortion))."END";
+			$prepSelectRows=$this->dbs[$sourceSide]->prepare($rowsQuery);
+
+			$prepSelectRows->execute(call_user_func_array('array_merge', $compValsPortion));
+			$rows=array_merge($rows,$prepSelectRows->fetchAll(PDO::FETCH_NUM));
+		}
+		return $rows;
+	}
+	
+	/**
+	 * 
+	 * @param SynkaTableSync $tableSync
+	 * @param array $compVals
+	 * @param string $sourceSide
+	 */
+	function getSubsetBeyondSourceRowsWithTempTable($tableSync,$compVals,$sourceSide) {
+		$db=$this->dbs[$sourceSide];
+		$tableName=$tableSync->table->tableName;
+		$createTableQuery=$subsetJoin="";
+		$fields=$tableSync->subsetFields;
+		$compareField=$tableSync->compareFields[0];
+		$fields[]=$compareField;
+		foreach ($fields as $field) {
+			if ($createTableQuery) {
+				$createTableQuery.=",";
+			}
+			$col=$tableSync->table->columns[$field];
+			$createTableQuery.="\n`$field` $col->type";
+			if ($field!=$compareField) {
+				$subsetJoin.="`$tableName`.`$field`={$tableName}2.`$field` AND ";
+			}
+		}
+		$db->exec("DROP TABLE IF EXISTS {$tableName}2");
+		$createTableQuery="CREATE TABLE IF NOT EXISTS `{$tableName}2` ($createTableQuery\n)";
+		
+		$db->exec($createTableQuery);
+		$fields_impl=$this->implodeTableFields($fields);
+		$rowPlaceholder="(?".str_repeat(",?", count($fields)-1).")";
+		while ($compValsPortion=array_splice($compVals,0,10000)) {
+			$rowsPlaceholders=$rowPlaceholder.str_repeat(",$rowPlaceholder", count($compValsPortion)-1);
+			$insertQuery="INSERT INTO `{$tableName}2` ($fields_impl) VALUES$rowsPlaceholders";
+			$prepInsert=$db->prepare($insertQuery);
+			$prepInsert->execute(call_user_func_array('array_merge', $compValsPortion));
+		}
+		$getFields_impl="";
+		foreach ($tableSync->selectFields?:$tableSync->copyFields as $getField) {
+			if ($getFields_impl) {
+				$getFields_impl.=",";
+			}
+			$getFields_impl.="`$tableName`.`$getField`";
+		}
+		$operator=$tableSync->compareOperator;
+		$selectQuery="SELECT $getFields_impl FROM `$tableName`"
+			."\nJOIN {$tableName}2 ON $subsetJoin`$tableName`.`$compareField`$operator{$tableName}2.`$compareField`";
+		$rows=$db->query($selectQuery)->fetchAll(PDO::FETCH_NUM);
+		return $rows;
 	}
 	
 	/**Takes a 2D array and a specification of fields/columns and translates IDs.
@@ -560,7 +635,7 @@ class Synka {
 			foreach ($tableSync->copyFields as $columnIndex=>$columnName) {
 				//need to turn "1" and "0" into true and false respectively.
 				//both values would otherwise always evaluate to true when doing prepared
-				if ($table->columns[$columnName]->type==="bit") {
+				if ($table->columns[$columnName]->type==="bit(1)") {
 					foreach ($rows as $rowIndex=>$row) {
 						$syncData[$side][$rowIndex][$columnIndex]=$row[$columnIndex]==="1";
 					}

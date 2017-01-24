@@ -59,7 +59,8 @@ class SynkaTester extends Synka {
 			foreach ($data['local'] as $localTableName=>$localTable) {
 				if ($localTable!=$data['remote'][$localTableName]) {
 					foreach ($localTable as $localRowIndex=>$localRow) {
-						if ($localRow!==$data['remote'][$localTableName][$localRowIndex]) {
+						$remoteRow=$data['remote'][$localTableName][$localRowIndex];
+						if ($localRow!==$remoteRow) {
 							echo "Mismatch at table \"$localTableName\", row $localRowIndex";
 							die;
 						}
