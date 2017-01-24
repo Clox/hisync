@@ -383,7 +383,7 @@ class Synka {
 				$this->translateIdViaMirror($sourceSide,$table);
 			}
 		}
-		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');	
+		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');
 	}
 	
 	/**
@@ -476,6 +476,9 @@ class Synka {
 	 */
 	protected function insertAndUpdateRows($tableSync,$side) {
 		trigger_error("Not implemented.");
+		//makeanalyzeTableSyncGlobalUnique if run save the uniques in the tableSync-object or something so this function
+		//can now which uniques are new and which are old without having to do an extra query.
+		//if it hasn't been run then fetch the uniques now and figure out new and old
 		$db=$this->dbs[$side];
 		$table=$tableSync->table;
 		$cols=$tableSync->copyFields;

@@ -77,7 +77,7 @@ class SynkaTable {
 			sort($subsetField);
 		}
 		if ($fields[0]==="*-") {
-			$fields=array_diff(array_keys($this->columns),$fields);
+			$fields=array_values(array_diff(array_keys($this->columns),$fields));
 		} else if ($fields==="*") {
 			$fields=array_keys($this->columns);
 			if ($this->pk&&$this->columns[$this->pk]->extra==="auto_increment"&&!$this->columns[$this->pk]->mirror) {

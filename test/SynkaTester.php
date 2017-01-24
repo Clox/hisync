@@ -5,23 +5,26 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-require_once '../Synka.php';
+require_once '../src/Synka.php';
 
 class SynkaTester extends Synka {
 	public function checkForDiscrepancies() {
 		$data=[];
 		foreach ($this->dbs as $currentSide=>$currentDb) {
 			foreach ($this->tables as $tableName=>$table) {
-				$fields=array_column($table->columns,"Field");
+				$fields=[];
+				foreach ($table->columns as $column) {
+					$fields[]=$column->name;
+				}
 				$fetchMode=PDO::FETCH_ASSOC;
 				$pk=null;
 				foreach ($table->columns as $column) {
-					if ($column['Key']==="PRI") {
+					if ($column->key==="PRI") {
 						if ($pk) {//only for single-column pk
 							$pk=null;
 							break;
 						}
-						$pk=$column['Field'];
+						$pk=$column->name;
 					}
 				}
 				if ($pk) {
@@ -32,12 +35,14 @@ class SynkaTester extends Synka {
 				}
 				$fields_impl=$this->implodeTableFields($fields);
 				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName")->fetchAll($fetchMode);
-				foreach ($table->linkedTables as $linkedTableName=>$tableLink) {
-					foreach ($tableData as $rowIndex=>$row) {
-						$fkId=$row[$tableLink['COLUMN_NAME']];
-						if ($fkId) {
-							$tableData[$rowIndex][$tableLink['COLUMN_NAME']]=
-								$data[$currentSide][$linkedTableName][$fkId];
+				if ($tableData) {
+					foreach ($table->linkedTables as $linkedTableName=>$tableLink) {
+						foreach ($tableData as $rowIndex=>$row) {
+							$fkId=$row[$tableLink['colName']];
+							if ($fkId) {
+								$tableData[$rowIndex][$tableLink['colName']]=
+									$data[$currentSide][$linkedTableName][$fkId];
+							}
 						}
 					}
 				}
@@ -47,6 +52,18 @@ class SynkaTester extends Synka {
 		foreach (["local","remote"] as $currentSide) {
 			foreach ($data[$currentSide] as $tableName=>$table) {
 				$data[$currentSide][$tableName]=array_values($table);
+			}
+		}
+		if ($data['local']!==$data['remote']) {
+			foreach ($data['local'] as $localTableName=>$localTable) {
+				if ($localTable!=$data['remote'][$localTableName]) {
+					foreach ($localTable as $localRowIndex=>$localRow) {
+						if ($localRow!==$data['remote'][$localTableName][$localRowIndex]) {
+							echo "Mismatch at table \"$localTableName\", row $localRowIndex";
+							die;
+						}
+					}
+				}
 			}
 		}
 		$match=$data['local']==$data['remote'];

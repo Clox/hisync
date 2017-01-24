@@ -29,9 +29,9 @@ $synka->table("tickers","tickerSymbol")->sync("*","tickerSymbol","!=");
 $synka->table("securities","id")->sync("*","id",">")->syncUpd(["notes","ignored","tickerId"],"updatedAt");
 $synka->table("portfoliorows")->sync("*","portfolioSnapshotId",">");
 $synka->table("strategies","id")->sync("*","id","!=")->syncUpd("*","updatedOn");
-$synka->table("dividends")->sync("*","time1",">","tickerId");
-$synka->table("splits")->sync("*","time1",">","tickerId");
-$synka->table("quotes")->sync("*","date",">","tickerId");
+$synka->table("dividends")->sync("*","time1",">","tickerId")->sync("*","tickerId","!=");
+$synka->table("splits")->sync("*","time1",">","tickerId")->sync("*","tickerId","!=");
+$synka->table("quotes")->sync("*","date",">","tickerId")->sync("*","tickerId","!=");;
 $synka->table("tickers_in_strategies")->sync("*",["strategyId","tickerId"],"!=")->syncUpd(["included"],"updatedAt");
 $syncData=$synka->analyze(false);//optional, if not called explicitly then Synka->sync() will call it
 $synka->commit();
