@@ -5,7 +5,7 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-require_once '../src/Synka.php';
+require_once __DIR__.'/../src/Synka.php';
 
 class SynkaTester extends Synka {
 	public function checkForDiscrepancies() {
@@ -45,9 +45,11 @@ class SynkaTester extends Synka {
 					array_unshift($fields, $pk);
 					$fetchMode|=PDO::FETCH_UNIQUE|PDO::FETCH_GROUP;
 				}
-				$fields_impl=$this->implodeTableFields($fields);
+				$fields_impl=$this->implodeTableFields($fields,$table);
+				echo "\nFetch $tableName from $currentSide...";
 				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName $orderBy")
 					->fetchAll($fetchMode);
+				echo " done!";
 				if ($tableData) {
 					foreach ($table->linkedTables as $linkedTableName=>$tableLink) {
 						foreach ($tableData as $rowIndex=>$row) {
@@ -62,6 +64,7 @@ class SynkaTester extends Synka {
 				$data[$currentSide][$tableName]=$tableData;
 			}
 		}
+		echo "\nAll data fetched.";
 		foreach (["local","remote"] as $currentSide) {
 			foreach ($data[$currentSide] as $tableName=>$table) {
 				$data[$currentSide][$tableName]=array_values($table);
@@ -89,6 +92,9 @@ class SynkaTester extends Synka {
 					}
 				}
 			}
+		} else {
+			echo "match!!!";
+			die;
 		}
 		
 		return $match;

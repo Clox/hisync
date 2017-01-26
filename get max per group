@@ -1,0 +1,50 @@
+_______________getting latest quote-date per ticker:____________________
+there are 106 tickers and 290787 quotes:
+
+
+..................1..................
+the following simply takes too long:
+SELECT `quotes`.`tickerId`,`quotes`.`date` FROM `quotes`
+LEFT JOIN `quotes` quotes2 ON quotes.`tickerId`=quotes2.`tickerId` AND quotes2.`date`> `quotes`.`date`
+WHERE quotes2.`date` is NULL
+
+its from http://stackoverflow.com/a/28090544/147949
+appereantly it doesn't work well when there are a lot of rows per group.
+seems to never finish
+
+
+................2................
+simple approach, times(ms): 1031,1035,1035,1241,1061
+select  SQL_NO_CACHE tickerId,`date` from quotes WHERE date=(select MAX(`date`) from quotes quotes2 where quotes2.tickerId=quotes.tickerId)
+
+
+
+
+
+...............3..................
+select SQL_NO_CACHE
+  quotes.tickerId, quotes.`date`
+from
+  quotes
+  inner join (
+    select max(`date`) `date`, tickerId
+    from quotes
+    group by tickerId
+  ) as max on max.tickerId = quotes.tickerId and max.`date` = quotes.`date`
+
+#times (ms) 1170,1194,989,1001,1003
+
+..................4...................
+SELECT `date`,tickerId
+FROM (SELECT `date`,tickerId
+FROM quotes 
+ORDER BY `date` ASC) AS s 
+GROUP BY tickerId
+#this one is supposed to work but doesn't seem to for mysql
+
+
+
+
+_______________getting updateAt from securities to sync outdated ones on both sides____________________
+there are 22692 securities
+

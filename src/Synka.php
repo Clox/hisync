@@ -27,6 +27,8 @@ class Synka {
 	
 	protected $tablesLocked=false;
 	
+	protected static $doSubsetBeyondWithTempTable=true;
+	
 	/**
 	 * 
 	 * @param PDO $localDB
@@ -144,6 +146,11 @@ class Synka {
 					foreach ($table->syncs as $tableSync) {
 						if ($tableSync->subsetFields&&$tableSync->compareOperator!=="!=") {
 							$lockStmt.=",`$tableName` `{$tableName}2` READ";
+							if (self::$doSubsetBeyondWithTempTable) {
+								$lockStmt.=",{$tableName}_temp WRITE";
+								$this->createTempTable($tableSync);
+							}
+							break;
 						}
 					}
 				}
@@ -152,8 +159,13 @@ class Synka {
 				$db->exec("LOCK TABLES $lockStmt");
 			}
 		}
+		echo PHP_EOL;
 		foreach ($this->tables as $table) {
+			$startTime=  microtime(1);
 			$this->setTableSyncsSelectFields($table);
+			if ($table->tableName=='quotes') {
+				$a=1;
+			}
 			foreach ($table->syncs as $tableSync) {
 				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
 					case [true,true]:
@@ -170,6 +182,7 @@ class Synka {
 				}
 				$syncData&&$this->addSyncData($tableSync,$syncData);
 			}
+			echo "Time taken for table \"$table->tableName\": ".(microtime(1)-$startTime).PHP_EOL;
 		}
 		return $this->tables;
 	}
@@ -243,7 +256,7 @@ class Synka {
 				break;
 			}
 		}
-		$uniqueRows=$this->dbs[$side]->query("SELECT $selectFields_impl FROM `{$tableSync->table->tableName}`")
+		$uniqueRows=$this->dbs[$side]->query("SELECT DISTINCT $selectFields_impl FROM `{$tableSync->table->tableName}`")
 			->fetchAll(PDO::FETCH_NUM);
 		if ($uniqueRows) {
 			if ($numUniqueFields===1) {
@@ -298,8 +311,11 @@ class Synka {
 				//if any of the subsetFields are pk/fk and not mirror then they will have to be translated in $compVals
 				$this->translateFields($tableSync,$targetSide,false,$compVals,$tableSync->subsetFields);
 				if ($compVals) {
-					//$rows=$this->getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide);
-					$rows=$this->getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide);
+					if (self::$doSubsetBeyondWithTempTable) {
+						$rows=$this->getSubsetBeyondSourceRowsWithTempTable($tableSync,$compVals,$sourceSide);
+					} else {
+						$rows=$this->getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide);
+					}
 					if ($rows) {
 						$result[$targetSide]=$rows;
 					}
@@ -309,7 +325,7 @@ class Synka {
 		return $result;
 	}
 	
-	function getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide) {
+	function getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide) {//securities use this for pairing,. dividends, splits and quotes use it for multi
 		$tableName=$tableSync->table->tableName;
 		$compareField=$tableSync->compareFields[0];
 		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
@@ -323,7 +339,7 @@ class Synka {
 				."=(?".str_repeat(",?",count($tableSync->subsetFields)-1).") THEN ?".PHP_EOL;
 		}
 		$rows=[];
-		while ($compValsPortion=array_splice($compVals,0,1000)) {
+		while ($compValsPortion=array_splice($compVals,0,10000)) {
 			$rowsQuery=$rowsQueryStart.str_repeat($subsetCase, count($compValsPortion))."END";
 			$prepSelectRows=$this->dbs[$sourceSide]->prepare($rowsQuery);
 
@@ -331,6 +347,26 @@ class Synka {
 			$rows=array_merge($rows,$prepSelectRows->fetchAll(PDO::FETCH_NUM));
 		}
 		return $rows;
+	}
+	
+	function createTempTable($tableSync) {
+		$tableName=$tableSync->table->tableName;
+		$createTableQuery="";
+		$fields=$tableSync->subsetFields;
+		$compareField=$tableSync->compareFields[0];
+		$fields[]=$compareField;
+		foreach ($fields as $field) {
+			if ($createTableQuery) {
+				$createTableQuery.=",";
+			}
+			$col=$tableSync->table->columns[$field];
+			$createTableQuery.="\n`$field` $col->type";
+		}
+		$createTableQuery="CREATE TABLE IF NOT EXISTS `{$tableName}_temp` ($createTableQuery\n)";
+		foreach (['local','remote'] as $side) {
+			$this->dbs[$side]->exec("DROP TABLE IF EXISTS {$tableName}_temp");
+			$this->dbs[$side]->exec($createTableQuery);
+		}
 	}
 	
 	/**
@@ -342,29 +378,21 @@ class Synka {
 	function getSubsetBeyondSourceRowsWithTempTable($tableSync,$compVals,$sourceSide) {
 		$db=$this->dbs[$sourceSide];
 		$tableName=$tableSync->table->tableName;
-		$createTableQuery=$subsetJoin="";
+		$subsetJoin="";
 		$fields=$tableSync->subsetFields;
 		$compareField=$tableSync->compareFields[0];
 		$fields[]=$compareField;
 		foreach ($fields as $field) {
-			if ($createTableQuery) {
-				$createTableQuery.=",";
-			}
-			$col=$tableSync->table->columns[$field];
-			$createTableQuery.="\n`$field` $col->type";
 			if ($field!=$compareField) {
-				$subsetJoin.="`$tableName`.`$field`={$tableName}2.`$field` AND ";
+				$subsetJoin.="`$tableName`.`$field`={$tableName}_temp.`$field` AND ";
 			}
 		}
-		$db->exec("DROP TABLE IF EXISTS {$tableName}2");
-		$createTableQuery="CREATE TABLE IF NOT EXISTS `{$tableName}2` ($createTableQuery\n)";
 		
-		$db->exec($createTableQuery);
 		$fields_impl=$this->implodeTableFields($fields);
 		$rowPlaceholder="(?".str_repeat(",?", count($fields)-1).")";
 		while ($compValsPortion=array_splice($compVals,0,10000)) {
 			$rowsPlaceholders=$rowPlaceholder.str_repeat(",$rowPlaceholder", count($compValsPortion)-1);
-			$insertQuery="INSERT INTO `{$tableName}2` ($fields_impl) VALUES$rowsPlaceholders";
+			$insertQuery="INSERT INTO `{$tableName}_temp` ($fields_impl) VALUES$rowsPlaceholders";
 			$prepInsert=$db->prepare($insertQuery);
 			$prepInsert->execute(call_user_func_array('array_merge', $compValsPortion));
 		}
@@ -376,9 +404,10 @@ class Synka {
 			$getFields_impl.="`$tableName`.`$getField`";
 		}
 		$operator=$tableSync->compareOperator;
-		$selectQuery="SELECT $getFields_impl FROM `$tableName`"
-			."\nJOIN {$tableName}2 ON $subsetJoin`$tableName`.`$compareField`$operator{$tableName}2.`$compareField`";
+		$selectQuery="SELECT $getFields_impl FROM `$tableName` \nJOIN {$tableName}_temp "
+			."ON $subsetJoin`$tableName`.`$compareField`$operator{$tableName}_temp.`$compareField`";
 		$rows=$db->query($selectQuery)->fetchAll(PDO::FETCH_NUM);
+		$this->dbs[$sourceSide]->exec("DROP TABLE {$tableName}_temp");
 		return $rows;
 	}
 	
@@ -658,7 +687,22 @@ class Synka {
 		$tableSync->syncData=$syncData;
 	}
 	
-	protected function implodeTableFields($fields) {
-		return "`".implode('`,`',$fields).'`';
+	protected function implodeTableFields($fields,$table=null) {
+		if ($table) {
+			$result="";
+			foreach ($fields as $field) {
+				if ($result) {
+					$result.=",";
+				}
+				if ($table->columns[$field]->type=="timestamp") {
+					$result.="UNIX_TIMESTAMP(`$field`)";
+				} else {
+					$result.="`$field`";
+				}
+			}
+		} else {
+			$result="`".implode('`,`',$fields).'`';
+		}
+		return $result;
 	}
 }
