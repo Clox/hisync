@@ -10,20 +10,24 @@ require_once '../src/Synka.php';
 class SynkaTester extends Synka {
 	public function checkForDiscrepancies() {
 		$data=[];
+		$orderedTables=[];
 		foreach ($this->dbs as $currentSide=>$currentDb) {
 			foreach ($this->tables as $tableName=>$table) {
 				$fields=[];
-				$orderBy=[];
+				$orderBy="";
+				if ($table->pk&&$table->pk===$table->mirrorField) {
+					$orderBy="ORDER BY `$table->pk`";
+					$orderedTables[$tableName]=true;
+				}
 				foreach ($table->columns as $column) {
+					if (!in_array($column->name, ['lastPortfolioScanTime','lastAttemptedPortfolioScan']))
 					$fields[]=$column->name;
+					if ($column->key==="UNI"&&!$column->fk) {
+						$orderBy="ORDER BY `$column->name`";
+						$orderedTables[$tableName]=true;
+					}
 				}
-				if ($table->pk) {
-					$orderBy[0]=$table->pk;
-				} else {
-					$orderBy=$fields;
-					//can also check if there is a unique field and use that, or else check if there is a unique
-					//multi-field which can be used, rather than using all fields
-				}
+				
 				$fetchMode=PDO::FETCH_ASSOC;
 				$pk=null;
 				foreach ($table->columns as $column) {
@@ -42,8 +46,7 @@ class SynkaTester extends Synka {
 					$fetchMode|=PDO::FETCH_UNIQUE|PDO::FETCH_GROUP;
 				}
 				$fields_impl=$this->implodeTableFields($fields);
-				$orderBy_impl=$this->implodeTableFields($orderBy);
-				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName ORDER BY $orderBy_impl")
+				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName $orderBy")
 					->fetchAll($fetchMode);
 				if ($tableData) {
 					foreach ($table->linkedTables as $linkedTableName=>$tableLink) {
@@ -62,6 +65,9 @@ class SynkaTester extends Synka {
 		foreach (["local","remote"] as $currentSide) {
 			foreach ($data[$currentSide] as $tableName=>$table) {
 				$data[$currentSide][$tableName]=array_values($table);
+				if (!isset($orderedTables[$tableName])) {
+					sort ($data[$currentSide][$tableName]);
+				}
 			}
 		}
 		$match=$data['local']==$data['remote'];
