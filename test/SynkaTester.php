@@ -13,8 +13,16 @@ class SynkaTester extends Synka {
 		foreach ($this->dbs as $currentSide=>$currentDb) {
 			foreach ($this->tables as $tableName=>$table) {
 				$fields=[];
+				$orderBy=[];
 				foreach ($table->columns as $column) {
 					$fields[]=$column->name;
+				}
+				if ($table->pk) {
+					$orderBy[0]=$table->pk;
+				} else {
+					$orderBy=$fields;
+					//can also check if there is a unique field and use that, or else check if there is a unique
+					//multi-field which can be used, rather than using all fields
 				}
 				$fetchMode=PDO::FETCH_ASSOC;
 				$pk=null;
@@ -34,7 +42,9 @@ class SynkaTester extends Synka {
 					$fetchMode|=PDO::FETCH_UNIQUE|PDO::FETCH_GROUP;
 				}
 				$fields_impl=$this->implodeTableFields($fields);
-				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName")->fetchAll($fetchMode);
+				$orderBy_impl=$this->implodeTableFields($orderBy);
+				$tableData=$currentDb->query("SELECT $fields_impl FROM $tableName ORDER BY $orderBy_impl")
+					->fetchAll($fetchMode);
 				if ($tableData) {
 					foreach ($table->linkedTables as $linkedTableName=>$tableLink) {
 						foreach ($tableData as $rowIndex=>$row) {
@@ -61,8 +71,14 @@ class SynkaTester extends Synka {
 					foreach ($localTable as $localRowIndex=>$localRow) {
 						$remoteRow=$data['remote'][$localTableName][$localRowIndex];
 						if ($localRow!==$remoteRow) {
-							echo "Mismatch at table \"$localTableName\", row $localRowIndex";
-							die;
+							foreach ($localRow as $fieldName=>$localField) {
+								$remoteField=$remoteRow[$fieldName];
+								if ($localField!==$remoteField) {
+									echo "Mismatch at:";
+									print_r(['table'=>$localTableName,'row'=>$localRowIndex,'field'=>$fieldName]);
+									die;
+								}
+							}
 						}
 					}
 				}

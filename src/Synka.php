@@ -152,12 +152,9 @@ class Synka {
 				$db->exec("LOCK TABLES $lockStmt");
 			}
 		}
-		$startTime=  microtime(1);
 		foreach ($this->tables as $table) {
 			$this->setTableSyncsSelectFields($table);
-			$tableSyncI=0;
 			foreach ($table->syncs as $tableSync) {
-				++$tableSyncI;
 				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
 					case [true,true]:
 						$syncData=$this->analyzeTableSyncSubsetUnique($tableSync);
