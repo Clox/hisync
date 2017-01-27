@@ -470,23 +470,30 @@ class Synka {
 	public function commit() {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
+		$writes=[];
 		foreach ($this->tables as $table) {
 			foreach ($this->dbs as $targetSide=>$targetDb) {
-			$sourceSide=$targetSide==='local'?'remote':'local';
-				foreach ($table->syncs as $tableSync) {		
+				$sourceSide=$targetSide==='local'?'remote':'local';
+				$tableSideWrites=['numUpdates'=>0,'numInserts'=>0];
+				foreach ($table->syncs as $tableSync) {
 					if (isset($tableSync->syncData[$targetSide])) {
 						$this->translateFields($tableSync, $sourceSide);
 						if ($tableSync->copyStrategy<3) {
-							$this->insertRows($tableSync, $targetSide, $tableSync->copyStrategy===2);
+							$syncWrites=$this->insertRows($tableSync, $targetSide, $tableSync->copyStrategy===2);
 						} else {
-							$this->insertAndUpdateRows($tableSync, $targetSide);
+							$syncWrites=$this->insertAndUpdateRows($tableSync, $targetSide);
 						}
+						$tableSideWrites['numInserts']+=$syncWrites['numInserts'];
+						$tableSideWrites['numUpdates']+=$syncWrites['numUpdates'];
 					}
 				}
 				$this->translateIdViaMirror($sourceSide,$table);
+				if ($tableSideWrites['numInserts']||$tableSideWrites['numUpdates'])
+					$writes[$targetSide][$table->tableName]=$tableSideWrites;
 			}
 		}
 		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');
+		return $writes;
 	}
 	
 	/**
@@ -544,6 +551,7 @@ class Synka {
 		$table=$tableSync->table;
 		$sourceSide=$side==="local"?"remote":"local";
 		$suffix="";
+		$totalNumInserts=$totalNumUpdates=0;
 		if ($onDupeUpdate) {
 			$suffix=PHP_EOL."ON DUPLICATE KEY UPDATE".PHP_EOL;
 			foreach ($tableSync->copyFields as $columnIndex=>$columnName) {
@@ -555,7 +563,8 @@ class Synka {
 		}
 		$rowIndex=0;
 		while ($rowsPortion=array_splice($rows,0,10000)) {
-			$rowsPlaceholders="($colsPlaceholders)".str_repeat(",($colsPlaceholders)", count($rowsPortion)-1);
+			$portionNumRows=count($rowsPortion);
+			$rowsPlaceholders="($colsPlaceholders)".str_repeat(",($colsPlaceholders)", $portionNumRows-1);
 			$prepRowInsert=$this->dbs[$side]->prepare(
 				"INSERT INTO `$table->tableName` ($cols_impl)".PHP_EOL
 				."VALUES $rowsPlaceholders"
@@ -563,6 +572,12 @@ class Synka {
 			);
 			$values=call_user_func_array('array_merge', $rowsPortion);
 			$prepRowInsert->execute($values);
+			$numAffected=$prepRowInsert->rowCount();
+			$numUpdates=$numAffected-$portionNumRows;
+			$numInserts=$portionNumRows-$numUpdates;
+			$totalNumInserts+=$numInserts;
+			$totalNumUpdates+=$numUpdates;
+			
 			if ($tableSync->selectFields) {//if other tables link to this one and need the generated ids for translating
 				$firstInsertedId=$this->dbs[$side]->lastInsertId();//actually first generated id from the last statement
 				foreach ($tableSync->insertsSourceIds[$side] as $sourceId) {
@@ -570,6 +585,7 @@ class Synka {
 				}
 			}
 		}
+		return ['numInserts'=>$totalNumInserts,'numUpdates'=>$totalNumUpdates];
 	}
 	
 	/**
