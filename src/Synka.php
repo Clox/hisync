@@ -753,7 +753,10 @@ class Synka {
 								."`$linkedTable->tableName`.`$linkedTable->pk`=`$tableName`.`$columnName`";
 						}
 					} else {
-						$queryFields[]=($hasFk?"`$tableName`.":"")."`$columnName`";
+						$queryField=($hasFk?"`$tableName`.":"")."`$columnName`";
+						if ($column->type=="timestamp")
+							$queryField="UNIX_TIMESTAMP($queryField)";
+						$queryFields[]=$queryField;
 					}
 				}
 			}
