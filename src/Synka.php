@@ -132,7 +132,7 @@ class Synka {
 		}
 	}
 	
-	public function analyze($lockTables=true) {
+	public function analyze($lockTables=true,$echo=false) {
 		$this->analyzed&&trigger_error("analyze() (or commit()) has already been called, can't call again.");
 		$this->analyzed=true;
 		if ($this->tablesLocked=$lockTables) {
@@ -159,7 +159,6 @@ class Synka {
 				$db->exec("LOCK TABLES $lockStmt");
 			}
 		}
-		echo PHP_EOL;
 		foreach ($this->tables as $table) {
 			$startTime=  microtime(1);
 			$this->setTableSyncsSelectFields($table);
@@ -182,9 +181,9 @@ class Synka {
 				}
 				$syncData&&$this->addSyncData($tableSync,$syncData);
 			}
-			echo "Time taken for table \"$table->tableName\": ".(microtime(1)-$startTime).PHP_EOL;
+			if ($echo)
+				echo "\nTime taken for analyzing table \"$table->tableName\": ".(microtime(1)-$startTime);
 		}
-		return $this->tables;
 	}
 	
 	/**
@@ -720,5 +719,66 @@ class Synka {
 			$result="`".implode('`,`',$fields).'`';
 		}
 		return $result;
+	}
+	
+	public function testForDiscrepancies($excludes) {
+		foreach ($this->dbs as $db) {
+			$db->exec(("SET group_concat_max_len = 18446744073709551615"));
+		}
+		foreach ($this->tables as $tableName=>$table) {
+			$queryFields=null;
+			$orderBy=$hasFk=null;
+			$queryJoins=[];
+			if ($table->pk&&$table->pk===$table->mirrorField) {
+				$orderBy="`$tableName`.`$table->pk`";
+			}
+			foreach ($table->columns as $columnName=>$column) {
+					if (!$orderBy&&$column->key==="UNI") {
+						$orderBy="`$tableName`.`$columnName`";
+					}
+					if ($column->fk) {
+						$hasFk=true;
+					}
+				}
+			foreach ($table->columns as $columnName=>$column) {
+				if($table->pk!==$columnName
+				&&!(isset($excludes[$tableName])&&in_array($columnName, $excludes[$tableName]))) {
+					if ($column->fk) {
+						$linkedTable=$this->tables[$column->fk];
+						if ($linkedTable->pk===$linkedTable->mirrorField) {
+							$queryFields[]="`$tableName`.`$columnName`";
+						} else {
+							$queryFields[]="`$linkedTable->tableName`.`$linkedTable->mirrorField`";
+							$queryJoins[]="JOIN `$linkedTable->tableName` ON "
+								."`$linkedTable->tableName`.`$linkedTable->pk`=`$tableName`.`$columnName`";
+						}
+					} else {
+						$queryFields[]=($hasFk?"`$tableName`.":"")."`$columnName`";
+					}
+				}
+			}
+			if ($queryFields) {
+				$queryFields_impl=implode(',', $queryFields);
+				$queryJoins_impl=implode("\n",$queryJoins);
+				if (!$orderBy) {
+					$orderBy=$queryFields_impl;
+				}
+				$query=
+					"SELECT MD5(".PHP_EOL
+					."	GROUP_CONCAT(".PHP_EOL
+					."		CONCAT($queryFields_impl)".PHP_EOL
+					."			ORDER BY $orderBy".PHP_EOL
+					."	)"
+					.") FROM `$tableName`".PHP_EOL
+					.$queryJoins_impl;
+				foreach ($this->dbs as $side=>$db) {
+					$md5s[$side]=$db->query($query)->fetch(PDO::FETCH_COLUMN);
+				}
+				if ($md5s['local']!==$md5s['remote']) {
+					return "\nMismatch in table $tableName";
+				}
+			}
+		}
+		echo "Match!";
 	}
 }
