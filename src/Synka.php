@@ -36,6 +36,10 @@ class Synka {
 	 */
 	public function __construct($localDB,$remoteDB) {
 		$this->dbs=['local'=>$localDB,'remote'=>$remoteDB];
+		foreach ($this->dbs as $db) {
+			//So that different timezones wont be an issue. Otherwise it is when dealing with timestamps and datetimes.
+			$db->exec("SET time_zone = '+00:00'");
+		}
 	}
 	
 	/**Adds a table that should be synced or which other syncing tables are linked to.
@@ -461,11 +465,14 @@ class Synka {
 		trigger_error("Not yet implemented");
 	}
 	
-	public function commit() {
+	public function commit($echo) {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
 		$writes=[];
 		foreach ($this->tables as $table) {
+			if ($echo) {
+				echo "\nCopy table $table->tableName... ";
+			}
 			foreach ($this->dbs as $targetSide=>$targetDb) {
 				$sourceSide=$targetSide==='local'?'remote':'local';
 				$tableSideWrites=['numUpdates'=>0,'numInserts'=>0];
@@ -484,6 +491,9 @@ class Synka {
 				$this->translateIdViaMirror($sourceSide,$table);
 				if ($tableSideWrites['numInserts']||$tableSideWrites['numUpdates'])
 					$writes[$targetSide][$table->tableName]=$tableSideWrites;
+			}
+			if ($echo) {
+				echo "Done.";
 			}
 		}
 		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');
