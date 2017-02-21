@@ -135,36 +135,31 @@ class Synka {
 	public function analyze($lockTables=true,$echo=false) {
 		$this->analyzed&&trigger_error("analyze() (or commit()) has already been called, can't call again.");
 		$this->analyzed=true;
-		if ($this->tablesLocked=$lockTables) {
-			$lockStmt="";
-			foreach ($this->tables as $tableName=>$table) {
-				if ($table->syncs) {
-					if ($lockStmt) {
-						$lockStmt.=',';
-					}
-					$lockStmt.="`$tableName` WRITE";
-					foreach ($table->syncs as $tableSync) {
-						if ($tableSync->subsetFields&&$tableSync->compareOperator!=="!=") {
-							$lockStmt.=",`$tableName` `{$tableName}2` READ";
-							if (self::$doSubsetBeyondWithTempTable) {
-								$lockStmt.=",{$tableName}_temp WRITE";
-								$this->createTempTable($tableSync);
-							}
-							break;
+		$lockStmt="";
+		foreach ($this->tables as $tableName=>$table) {
+			if ($table->syncs) {
+				if ($lockStmt) {
+					$lockStmt.=',';
+				}
+				$lockStmt.="`$tableName` WRITE";
+				foreach ($table->syncs as $tableSync) {
+					if ($tableSync->subsetFields&&$tableSync->compareOperator!=="!=") {
+						$lockStmt.=",`$tableName` `{$tableName}2` READ";
+						if (self::$doSubsetBeyondWithTempTable) {
+							$lockStmt.=",{$tableName}_temp WRITE";
+							$this->createTempTable($tableSync);
 						}
+						break;
 					}
 				}
 			}
-			foreach ($this->dbs as $db) {
-				$db->exec("LOCK TABLES $lockStmt");
-			}
 		}
+		if ($this->tablesLocked=$lockTables)
+			foreach ($this->dbs as $db)
+				$db->exec("LOCK TABLES $lockStmt");
 		foreach ($this->tables as $table) {
 			$startTime=  microtime(1);
 			$this->setTableSyncsSelectFields($table);
-			if ($table->tableName=='quotes') {
-				$a=1;
-			}
 			foreach ($table->syncs as $tableSync) {
 				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
 					case [true,true]:
@@ -561,7 +556,7 @@ class Synka {
 			}
 		}
 		$rowIndex=0;
-		while ($rowsPortion=array_splice($rows,0,10000)) {
+		while ($rowsPortion=array_splice($rows,0,5000)) {
 			$portionNumRows=count($rowsPortion);
 			$rowsPlaceholders="($colsPlaceholders)".str_repeat(",($colsPlaceholders)", $portionNumRows-1);
 			$prepRowInsert=$this->dbs[$side]->prepare(
@@ -678,7 +673,8 @@ class Synka {
 				//both values would otherwise always evaluate to true when doing prepared
 				if ($table->columns[$columnName]->type==="bit(1)") {
 					foreach ($rows as $rowIndex=>$row) {
-						$syncData[$side][$rowIndex][$columnIndex]=$row[$columnIndex]==="1";
+						if (isset($row[$columnIndex]))//do not cast if null(values are "1"|"0" or null with type null)
+							$syncData[$side][$rowIndex][$columnIndex]=$row[$columnIndex]==="1";
 					}
 				}
 			}
@@ -782,6 +778,6 @@ class Synka {
 				}
 			}
 		}
-		echo "Match!";
+		return "Match!";
 	}
 }
