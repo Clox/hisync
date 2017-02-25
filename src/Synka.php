@@ -459,7 +459,7 @@ class Synka {
 		trigger_error("Not yet implemented");
 	}
 	
-	public function commit($echo=false) {
+	public function commit($unlock=false,$echo=false) {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
 		$writes=[];
@@ -490,10 +490,15 @@ class Synka {
 				echo "Done.";
 			}
 		}
-		if ($this->tablesLocked)
-			foreach ($this->dbs as $db)
-				$db->exec('UNLOCK TABLES;');
+		if ($unlock&&$this->tablesLocked)
+			$this->unlock();
 		return $writes;
+	}
+	
+	protected function unlock() {
+		$this->tablesLocked=false;
+		foreach ($this->dbs as $db)
+			$db->exec('UNLOCK TABLES;');
 	}
 	
 	/**
@@ -702,7 +707,11 @@ class Synka {
 		$tableSync->syncData=$syncData;
 	}
 	
-	public function testForDiscrepancies($excludes) {
+	public function testForDiscrepancies($excludes,$unlock=false) {
+		if (!$this->tablesLocked) {
+			trigger_error("Cant test for discrepancies unless the database-tables are locked. Specify"
+				." to lock the tables when calling analyze(), and when calling commit(), do not specify to unlock");
+		}
 		foreach ($this->dbs as $db) {
 			$db->exec(("SET group_concat_max_len = 18446744073709551615"));
 		}
@@ -759,10 +768,12 @@ class Synka {
 					$md5s[$side]=$db->query($query)->fetch(PDO::FETCH_COLUMN);
 				}
 				if ($md5s['local']!==$md5s['remote']) {
-					return "\nMismatch in table $tableName";
+					$unlock&&$this->unlock();
+					return $tableName;
 				}
 			}
 		}
-		return "Match!";
+		$unlock&&$this->unlock();
+		return false;
 	}
 }
