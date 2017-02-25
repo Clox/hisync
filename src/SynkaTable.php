@@ -124,4 +124,28 @@ class SynkaTable {
 	public function addIdsToTranslate($side,$ids) {
 		$this->translateIdFrom[$side]+=array_fill_keys($ids, null);
 	}
+	
+	public function getColumnSelectors($columnNames,$includeTableSpecify=false) {
+		$tableSpec='';
+		if ($includeTableSpecify) {
+			$tableSpec="`$this->tableName`.";
+		}
+		foreach ($columnNames as $columnName) {
+			if ($this->columns[$columnName]->type==="timestamp")
+				$result[]="UNIX_TIMESTAMP($tableSpec`$columnName`)";
+			else
+				$result[]="$tableSpec`$columnName`";
+		}
+		return $result;
+	}
+	
+	public function getColumnPlaceHolders($columnNames) {
+		foreach ($columnNames as $columnName) {
+			if ($this->columns[$columnName]->type==="timestamp")
+				$result[]="FROM_UNIXTIME(?)";
+			else
+				$result[]="?";
+		}
+		return '('.implode(',',$result).')';
+	}
 }

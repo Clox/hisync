@@ -36,10 +36,6 @@ class Synka {
 	 */
 	public function __construct($localDB,$remoteDB) {
 		$this->dbs=['local'=>$localDB,'remote'=>$remoteDB];
-		foreach ($this->dbs as $db) {
-			//So that different timezones wont be an issue. Otherwise it is when dealing with timestamps and datetimes.
-			$db->exec("SET time_zone = '+00:00'");
-		}
 	}
 	
 	/**Adds a table that should be synced or which other syncing tables are linked to.
@@ -94,7 +90,7 @@ class Synka {
 			$otherDb=$thisDb===$this->dbs['local']?$this->dbs['remote']:$this->dbs['local'];
 			
 			$tableFields=$table->syncData['columns'];
-			$tableFields_impl=$this->implodeTableFields($tableFields);
+			$tableFields_impl=implode(',',$table->getColumnSelectors($tableFields));
 			$thisUniqueValues=$thisDb->query("SELECT `$table->mirrorField` FROM `$table->tableName`")
 				->fetchAll(PDO::FETCH_COLUMN);
 			$selectMissingRowsQuery="SELECT $tableFields_impl FROM `$table->tableName`";
@@ -115,7 +111,7 @@ class Synka {
 	 * The use of it is to be able to fetch and save the pk's of the source db even if they wont be inserted
 	 * intro the target db, then when the data is inserted into the target db, we can use the list to figure out
 	 * what the id of each row is in the source-db without querying for it, so that we can use it for id-translation.
-	 * The pk-field is added ifany other tables that are being synced are linking to this table and also that the
+	 * The pk-field is added if any other tables that are being synced are linking to this table and also that the
 	 * PK-field is not also a mirror-field since then it wont be needed.
 	 * @param SynkaTable $table*/
 	protected function setTableSyncsSelectFields($table) {
@@ -165,17 +161,17 @@ class Synka {
 			$startTime=  microtime(1);
 			$this->setTableSyncsSelectFields($table);
 			foreach ($table->syncs as $tableSync) {
-				switch ([!!$tableSync->subsetFields,$tableSync->compareOperator==="!="]) {
-					case [true,true]:
+				switch (!!$tableSync->subsetFields<<1|$tableSync->compareOperator==="!=") {
+					case 0b11:
 						$syncData=$this->analyzeTableSyncSubsetUnique($tableSync);
 					break;
-					case [true,false]:
+					case 0b10:
 						$syncData=$this->analyzeTableSyncSubsetBeyond($tableSync);
 					break;
-					case [false,true]:
+					case 0b01:
 						$syncData=$this->analyzeTableSyncGlobalUnique($tableSync);
 					break;
-					case [false,false]:
+					case 0b00:
 						$syncData=$this->analyzeTableSyncGlobalBeyond($tableSync);
 				}
 				$syncData&&$this->addSyncData($tableSync,$syncData);
@@ -190,14 +186,14 @@ class Synka {
 	 * @param SynkaTableSync $tableSync*/
 	protected function analyzeTableSyncGlobalBeyond($tableSync) {
 		$table=$tableSync->table;
-		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+		$selectFields_impl=implode(',',$table->getColumnSelectors($tableSync->selectFields?:$tableSync->copyFields));
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
 			$sourceDb=$this->dbs[$sourceSide];
 			$compareVal=$targetDb->query("SELECT MAX(`{$tableSync->compareFields[0]}`) FROM `$table->tableName`")
 			->fetchAll(PDO::FETCH_COLUMN);
 			
-			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
+			$selectRowsQuery="SELECT $selectFields_impl".PHP_EOL
 					."FROM `$table->tableName`";
 			if ($compareVal) {
 				$selectRowsQuery.=PHP_EOL."WHERE `{$tableSync->compareFields[0]}`$tableSync->compareOperator?";
@@ -217,15 +213,15 @@ class Synka {
 	protected function analyzeTableSyncGlobalUnique($tableSync) {
 		$syncData=[];
 		$table=$tableSync->table;
-		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+		$selectFields_impl=implode(',',$table->getColumnSelectors($tableSync->selectFields?:$tableSync->copyFields));
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
-			$selectRowsQuery="SELECT $tableFields_impl".PHP_EOL
+			$selectRowsQuery="SELECT $selectFields_impl".PHP_EOL
 				."FROM `$table->tableName`";
 			$notAmong=$this->getGlobalUniqueCompareValues($targetSide,$tableSync);
 			$this->translateFields($tableSync, $targetSide, false, $notAmong, $tableSync->compareFields);
 			if ($notAmong) {
-				$uniqueFields_impl=$this->implodeTableFields($tableSync->compareFields);
+				$uniqueFields_impl=implode(',',$table->getColumnSelectors($tableSync->compareFields));
 				if (count($tableSync->compareFields)===1) {
 					$placeHolders='?'.str_repeat(',?', count($notAmong)-1);
 				} else {
@@ -244,7 +240,7 @@ class Synka {
 	}
 	
 	protected function getGlobalUniqueCompareValues($side,$tableSync) {
-		$selectFields_impl=$this->implodeTableFields($tableSync->compareFields);
+		$selectFields_impl=implode(',',$tableSync->table->getColumnSelectors($tableSync->compareFields));
 		$numUniqueFields=count($tableSync->compareFields);
 		$alsoGetPk=null;
 		foreach ($tableSync->table->syncs as $otherTableSync) {//should we just be checking the current $tableSync...?
@@ -281,10 +277,12 @@ class Synka {
 	 * @param SynkaTableSync $tableSync*/
 	protected function analyzeTableSyncSubsetBeyond($tableSync) {
 		$result=[];
-		$tableName=$tableSync->table->tableName;
-		$compareField=$tableSync->compareFields[0];
+		$table=$tableSync->table;
+		$tableName=$table->tableName;
+		$compareField=$table->getColumnSelectors([$tableSync->compareFields[0]])[0];
 		$maxOrMin=$tableSync->compareOperator==="<"?"MIN":"MAX";
-		$subsetFields_impl=$this->implodeTableFields($tableSync->subsetFields);
+		$subsetFields_impl=implode(',',$table->getColumnSelectors($tableSync->subsetFields));
+		
 		$needJoin=null;
 		$subsetJoinPart="";
 		foreach ($tableSync->subsetFields as $subsetField) {
@@ -296,11 +294,11 @@ class Synka {
 			$subsetJoinPart.="`$tableName`.`$subsetField`={$tableName}2.`$subsetField`";
 		}
 		if ($needJoin) {
-			$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`".PHP_EOL
-				."WHERE `$compareField`=(SELECT $maxOrMin(`$compareField`) FROM `$tableName` `{$tableName}2`"
+			$compValsQuery="SELECT $subsetFields_impl,$compareField FROM `$tableName`".PHP_EOL
+				."WHERE $compareField=(SELECT $maxOrMin($compareField) FROM `$tableName` `{$tableName}2`"
 										." WHERE $subsetJoinPart)";
 		} else {
-			$compValsQuery="SELECT $subsetFields_impl,`$compareField` FROM `$tableName`";
+			$compValsQuery="SELECT $subsetFields_impl,$compareField FROM `$tableName`";
 		}
 		foreach ($this->dbs as $targetSide=>$targetDb) {
 			$sourceSide=$targetSide==='local'?'remote':'local';
@@ -326,14 +324,15 @@ class Synka {
 	function getSubsetBeyondSourceRows($tableSync,$compVals,$sourceSide) {//securities use this for pairing,. dividends, splits and quotes use it for multi
 		$tableName=$tableSync->table->tableName;
 		$compareField=$tableSync->compareFields[0];
-		$tableFields_impl=$this->implodeTableFields($tableSync->selectFields?:$tableSync->copyFields);
+		$tableFields_impl=implode(',',$table->getColumnSelectors($tableSync->selectFields?:$tableSync->copyFields));
+		$subsetFields_impl=implode(',',$table->getColumnSelectors($tableSync->subsetFields));
 		$rowsQueryStart="SELECT $tableFields_impl\nFROM `$tableName`".PHP_EOL
 						."WHERE `$compareField`{$tableSync->compareOperator}CASE".PHP_EOL;
 		if (count($tableSync->subsetFields)===1) {
 			$rowsQueryStart.=" `{$tableSync->subsetFields[0]}`".PHP_EOL;
 			$subsetCase="WHEN ? THEN ?".PHP_EOL;
 		} else {
-			$subsetCase="WHEN (".$this->implodeTableFields($tableSync->subsetFields).")"
+			$subsetCase="WHEN ($subsetFields_impl)"
 				."=(?".str_repeat(",?",count($tableSync->subsetFields)-1).") THEN ?".PHP_EOL;
 		}
 		$rows=[];
@@ -375,7 +374,8 @@ class Synka {
 	 */
 	function getSubsetBeyondSourceRowsWithTempTable($tableSync,$compVals,$sourceSide) {
 		$db=$this->dbs[$sourceSide];
-		$tableName=$tableSync->table->tableName;
+		$table=$tableSync->table;
+		$tableName=$table->tableName;
 		$subsetJoin="";
 		$fields=$tableSync->subsetFields;
 		$compareField=$tableSync->compareFields[0];
@@ -386,23 +386,17 @@ class Synka {
 			}
 		}
 		
-		$fields_impl=$this->implodeTableFields($fields);
-		$rowPlaceholder="(?".str_repeat(",?", count($fields)-1).")";
+		$fields_impl='`'.implode('`,`',$fields).'`';
+		$rowPlaceholder=$table->getColumnPlaceHolders($fields);
 		while ($compValsPortion=array_splice($compVals,0,10000)) {
 			$rowsPlaceholders=$rowPlaceholder.str_repeat(",$rowPlaceholder", count($compValsPortion)-1);
 			$insertQuery="INSERT INTO `{$tableName}_temp` ($fields_impl) VALUES$rowsPlaceholders";
 			$prepInsert=$db->prepare($insertQuery);
 			$prepInsert->execute(call_user_func_array('array_merge', $compValsPortion));
 		}
-		$getFields_impl="";
-		foreach ($tableSync->selectFields?:$tableSync->copyFields as $getField) {
-			if ($getFields_impl) {
-				$getFields_impl.=",";
-			}
-			$getFields_impl.="`$tableName`.`$getField`";
-		}
+		$selectFields_impl=implode(',',$table->getColumnSelectors($tableSync->selectFields?:$tableSync->copyFields,1));
 		$operator=$tableSync->compareOperator;
-		$selectQuery="SELECT $getFields_impl FROM `$tableName` \nJOIN {$tableName}_temp "
+		$selectQuery="SELECT $selectFields_impl FROM `$tableName` \nJOIN {$tableName}_temp "
 			."ON $subsetJoin`$tableName`.`$compareField`$operator{$tableName}_temp.`$compareField`";
 		$rows=$db->query($selectQuery)->fetchAll(PDO::FETCH_NUM);
 		$this->dbs[$sourceSide]->exec("DROP TABLE {$tableName}_temp");
@@ -465,7 +459,7 @@ class Synka {
 		trigger_error("Not yet implemented");
 	}
 	
-	public function commit($echo) {
+	public function commit($echo=false) {
 		$this->commited&&trigger_error("commit() has already been called, can't call again.");
 		!$this->analyzed&&$this->analyze();
 		$writes=[];
@@ -496,7 +490,9 @@ class Synka {
 				echo "Done.";
 			}
 		}
-		$this->tablesLocked&&$targetDb->exec('UNLOCK TABLES;');
+		if ($this->tablesLocked)
+			foreach ($this->dbs as $db)
+				$db->exec('UNLOCK TABLES;');
 		return $writes;
 	}
 	
@@ -548,11 +544,10 @@ class Synka {
 	}	
 	
 	protected function insertRows($tableSync,$side,$onDupeUpdate) {
-		$cols=$tableSync->copyFields;
-		$cols_impl=$this->implodeTableFields($cols);
-		$colsPlaceholders='?'.str_repeat(',?', count($cols)-1);
-		$rows=$tableSync->syncData[$side];
+		$cols_impl='`'.implode('`,`',$tableSync->copyFields).'`';
 		$table=$tableSync->table;
+		$colsPlaceholders=$table->getColumnPlaceHolders($tableSync->copyFields);
+		$rows=$tableSync->syncData[$side];
 		$sourceSide=$side==="local"?"remote":"local";
 		$suffix="";
 		$totalNumInserts=$totalNumUpdates=0;
@@ -568,12 +563,11 @@ class Synka {
 		$rowIndex=0;
 		while ($rowsPortion=array_splice($rows,0,5000)) {
 			$portionNumRows=count($rowsPortion);
-			$rowsPlaceholders="($colsPlaceholders)".str_repeat(",($colsPlaceholders)", $portionNumRows-1);
-			$prepRowInsert=$this->dbs[$side]->prepare(
-				"INSERT INTO `$table->tableName` ($cols_impl)".PHP_EOL
+			$rowsPlaceholders=$colsPlaceholders.str_repeat(",$colsPlaceholders", $portionNumRows-1);
+			$query="INSERT INTO `$table->tableName` ($cols_impl)".PHP_EOL
 				."VALUES $rowsPlaceholders"
-				.$suffix
-			);
+				.$suffix;
+			$prepRowInsert=$this->dbs[$side]->prepare($query);
 			$values=call_user_func_array('array_merge', $rowsPortion);
 			$prepRowInsert->execute($values);
 			$numAffected=$prepRowInsert->rowCount();
@@ -706,25 +700,6 @@ class Synka {
 			}
 		}
 		$tableSync->syncData=$syncData;
-	}
-	
-	protected function implodeTableFields($fields,$table=null) {
-		if ($table) {
-			$result="";
-			foreach ($fields as $field) {
-				if ($result) {
-					$result.=",";
-				}
-				if ($table->columns[$field]->type=="timestamp") {
-					$result.="UNIX_TIMESTAMP(`$field`)";
-				} else {
-					$result.="`$field`";
-				}
-			}
-		} else {
-			$result="`".implode('`,`',$fields).'`';
-		}
-		return $result;
 	}
 	
 	public function testForDiscrepancies($excludes) {

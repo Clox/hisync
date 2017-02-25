@@ -13,7 +13,7 @@ class SynkaTableSync {
 	
 	public $syncData;
 	
-	/**See Synka->setTableSyncsSelectFields() for explenation.
+	/**See Synka->setTableSyncsSelectFields() for explanation.
 	 * @var int[]*/
 	public $insertsSourceIds=['local'=>[],'remote'=>[]];
 	
